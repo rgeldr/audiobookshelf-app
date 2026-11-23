@@ -20,7 +20,7 @@
           <p class="text-base text-fg">{{ description }}</p>
         </div>
 
-        <tables-playlist-items-table :items="playlistItems" :playlist-id="playlist.id" @showMore="showMore" />
+        <tables-playlist-items-table :items="playlistItems" :playlist-id="playlist.id" @showMore="showMore" @playFromHere="playFromRow" />
       </div>
     </div>
 
@@ -32,6 +32,8 @@
 </template>
 
 <script>
+import { queueAfter } from '@/utils/playbackQueue'
+
 export default {
   async asyncData({ store, params, app, redirect, route }) {
     if (!store.state.user.user) {
@@ -139,20 +141,54 @@ export default {
         this.playNextItem()
       }
     },
+    playPayloadForPlaylistItem(item) {
+      if (item.localLibraryItem) {
+        return {
+          libraryItemId: item.localLibraryItem.id,
+          episodeId: item.localEpisode?.id || null,
+          serverLibraryItemId: item.libraryItemId,
+          serverEpisodeId: item.episodeId || null
+        }
+      }
+      return {
+        libraryItemId: item.libraryItemId,
+        episodeId: item.episodeId || null
+      }
+    },
+    queueEntriesFromPlaylist(startItem) {
+      const startIndex = this.playableItems.indexOf(startItem)
+      return queueAfter(
+        this.playableItems.map((item) => {
+          const payload = this.playPayloadForPlaylistItem(item)
+          const progress = this.$store.getters['user/getUserMediaProgress'](item.libraryItemId, item.episodeId)
+          return {
+            libraryItemId: payload.libraryItemId,
+            episodeId: payload.episodeId || null,
+            finished: !!progress?.isFinished
+          }
+        }),
+        startIndex
+      )
+    },
+    emitPlaylistPlay(item) {
+      const payload = this.playPayloadForPlaylistItem(item)
+      payload.queue = this.queueEntriesFromPlaylist(item)
+      this.mediaIdStartingPlayback = item.episodeId || item.libraryItemId
+      this.$store.commit('setPlayerIsStartingPlayback', this.mediaIdStartingPlayback)
+      this.$eventBus.$emit('play-item', payload)
+    },
     playNextItem() {
       const nextItem = this.playableItems.find((i) => {
         const prog = this.$store.getters['user/getUserMediaProgress'](i.libraryItemId, i.episodeId)
         return !prog?.isFinished
       })
-      if (nextItem) {
-        this.mediaIdStartingPlayback = nextItem.episodeId || nextItem.libraryItemId
-        this.$store.commit('setPlayerIsStartingPlayback', this.mediaIdStartingPlayback)
-        if (nextItem.localLibraryItem) {
-          this.$eventBus.$emit('play-item', { libraryItemId: nextItem.localLibraryItem.id, episodeId: nextItem.localEpisode?.id, serverLibraryItemId: nextItem.libraryItemId, serverEpisodeId: nextItem.episodeId })
-        } else {
-          this.$eventBus.$emit('play-item', { libraryItemId: nextItem.libraryItemId, episodeId: nextItem.episodeId })
-        }
-      }
+      if (nextItem) this.emitPlaylistPlay(nextItem)
+    },
+    playFromRow(item) {
+      if (this.playerIsStartingPlayback) return
+      const playable = this.playableItems.find((pi) => pi.libraryItemId === item.libraryItemId && (pi.episodeId || null) === (item.episodeId || null))
+      if (!playable) return
+      this.emitPlaylistPlay(playable)
     },
     playlistUpdated(playlist) {
       if (this.playlist.id !== playlist.id) return

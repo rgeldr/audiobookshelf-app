@@ -22,7 +22,7 @@
           <p class="text-base text-fg">{{ description }}</p>
         </div>
 
-        <tables-collection-books-table :books="bookItems" :collection-id="collection.id" />
+        <tables-collection-books-table :books="bookItems" :collection-id="collection.id" @playFromHere="playFromRow" />
       </div>
     </div>
     <div v-show="processingRemove" class="absolute top-0 left-0 w-full h-full z-10 bg-black bg-opacity-40 flex items-center justify-center">
@@ -32,6 +32,8 @@
 </template>
 
 <script>
+import { queueAfter } from '@/utils/playbackQueue'
+
 export default {
   async asyncData({ store, params, app, redirect, route }) {
     if (!store.state.user.user) {
@@ -120,21 +122,49 @@ export default {
         this.playNextItem()
       }
     },
+    playPayloadForBook(book) {
+      if (book.localLibraryItem) {
+        return {
+          libraryItemId: book.localLibraryItem.id,
+          serverLibraryItemId: book.id
+        }
+      }
+      return { libraryItemId: book.id }
+    },
+    queueEntriesFromCollection(startBook) {
+      const startIndex = this.playableItems.indexOf(startBook)
+      return queueAfter(
+        this.playableItems.map((book) => {
+          const payload = this.playPayloadForBook(book)
+          const progress = this.$store.getters['user/getUserMediaProgress'](book.id)
+          return {
+            libraryItemId: payload.libraryItemId,
+            episodeId: null,
+            finished: !!progress?.isFinished
+          }
+        }),
+        startIndex
+      )
+    },
+    emitCollectionPlay(book) {
+      const payload = this.playPayloadForBook(book)
+      payload.queue = this.queueEntriesFromCollection(book)
+      this.mediaIdStartingPlayback = book.id
+      this.$store.commit('setPlayerIsStartingPlayback', book.id)
+      this.$eventBus.$emit('play-item', payload)
+    },
     playNextItem() {
       const nextBookNotRead = this.playableItems.find((pb) => {
         const prog = this.$store.getters['user/getUserMediaProgress'](pb.id)
         return !prog?.isFinished
       })
-      if (nextBookNotRead) {
-        this.mediaIdStartingPlayback = nextBookNotRead.id
-        this.$store.commit('setPlayerIsStartingPlayback', nextBookNotRead.id)
-
-        if (nextBookNotRead.localLibraryItem) {
-          this.$eventBus.$emit('play-item', { libraryItemId: nextBookNotRead.localLibraryItem.id, serverLibraryItemId: nextBookNotRead.id })
-        } else {
-          this.$eventBus.$emit('play-item', { libraryItemId: nextBookNotRead.id })
-        }
-      }
+      if (nextBookNotRead) this.emitCollectionPlay(nextBookNotRead)
+    },
+    playFromRow(book) {
+      if (this.playerIsStartingPlayback) return
+      const playable = this.playableItems.find((b) => b.id === book.id)
+      if (!playable) return
+      this.emitCollectionPlay(playable)
     },
     libraryChanged(libraryId) {
       // A collection belongs to a single library, so leave this page when a different library is

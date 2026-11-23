@@ -8,6 +8,8 @@ import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.media.MediaEventManager
 import com.audiobookshelf.app.player.CastManager
+import com.audiobookshelf.app.player.PlaybackQueueEntry
+import com.audiobookshelf.app.player.queueEpisodeId
 import com.audiobookshelf.app.player.PlayerListener
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.server.ApiHandler
@@ -223,18 +225,31 @@ class AbsAudioPlayer : Plugin() {
       return call.resolve(JSObject("{\"error\":\"Invalid request\"}"))
     }
 
+    // Drop any in-flight auto-advance, and keep the previous queue from starting while this
+    // item is still loading. The new queue is installed only once preparePlayer runs.
+    val playbackGeneration = ++playerNotificationService.autoAdvanceGeneration
+    playerNotificationService.playbackQueue.clear()
+    val queuedEntries = parsePlaybackQueue(call)
+
     if (libraryItemId.startsWith("local")) { // Play local media item
-      DeviceManager.dbManager.getLocalLibraryItem(libraryItemId)?.let {
+      val localLibraryItem = DeviceManager.dbManager.getLocalLibraryItem(libraryItemId)
+      if (localLibraryItem == null) {
+        clearPlaybackQueue(playbackGeneration)
+        return
+      }
+      localLibraryItem.let {
         var episode: PodcastEpisode? = null
         if (episodeId.isNotEmpty()) {
           val podcastMedia = it.media as Podcast
           episode = podcastMedia.episodes?.find { ep -> ep.id == episodeId }
           if (episode == null) {
             Log.e(tag, "prepareLibraryItem: Podcast episode not found $episodeId")
+            clearPlaybackQueue(playbackGeneration)
             return call.resolve(JSObject("{\"error\":\"Podcast episode not found\"}"))
           }
         }
         if (!it.hasTracks(mainActivity, episode)) {
+          clearPlaybackQueue(playbackGeneration)
           return call.resolve(JSObject("{\"error\":\"No audio files found on device. Download book again to fix.\"}"))
         }
 
@@ -252,6 +267,7 @@ class AbsAudioPlayer : Plugin() {
               PlayerListener.lazyIsPlaying = false
 
               Handler(Looper.getMainLooper()).post { // TODO: This was needed again which is probably a design a flaw
+                if (!installPlaybackQueue(playbackGeneration, queuedEntries)) return@post
                 playerNotificationService.preparePlayer(
                   playbackSession,
                   playWhenReady,
@@ -261,7 +277,9 @@ class AbsAudioPlayer : Plugin() {
             }
           } else {
             playerNotificationService.mediaProgressSyncer.reset()
-            playerNotificationService.preparePlayer(playbackSession, playWhenReady, playbackRate)
+            if (installPlaybackQueue(playbackGeneration, queuedEntries)) {
+              playerNotificationService.preparePlayer(playbackSession, playWhenReady, playbackRate)
+            }
           }
         }
         return call.resolve(JSObject())
@@ -272,6 +290,7 @@ class AbsAudioPlayer : Plugin() {
         playerNotificationService.mediaProgressSyncer.stop {
           apiHandler.playLibraryItem(libraryItemId, episodeId, playItemRequestPayload) {
             if (it == null) {
+              clearPlaybackQueue(playbackGeneration)
               call.resolve(JSObject("{\"error\":\"Server play request failed\"}"))
             } else {
               if (startTimeOverride != null) {
@@ -280,6 +299,7 @@ class AbsAudioPlayer : Plugin() {
               }
 
               Handler(Looper.getMainLooper()).post {
+                if (!installPlaybackQueue(playbackGeneration, queuedEntries)) return@post
                 Log.d(tag, "Preparing Player playback session ${jacksonMapper.writeValueAsString(it)}")
                 PlayerListener.lazyIsPlaying = false
                 playerNotificationService.preparePlayer(it, playWhenReady, playbackRate)
@@ -457,5 +477,48 @@ class AbsAudioPlayer : Plugin() {
     val jsobj = JSObject()
     jsobj.put("value", isCastAvailable)
     call.resolve(jsobj)
+  }
+
+  @PluginMethod
+  fun setPlaybackQueue(call: PluginCall) {
+    val entries = parsePlaybackQueue(call)
+    playerNotificationService.autoAdvanceGeneration += 1
+    playerNotificationService.playbackQueue.replace(entries)
+    logQueueInstalled("resume", entries)
+    call.resolve()
+  }
+
+  private fun installPlaybackQueue(generation: Int, entries: List<PlaybackQueueEntry>): Boolean {
+    if (playerNotificationService.autoAdvanceGeneration != generation) return false
+    playerNotificationService.playbackQueue.replace(entries)
+    logQueueInstalled("prepare", entries)
+    return true
+  }
+
+  private fun logQueueInstalled(source: String, entries: List<PlaybackQueueEntry>) {
+    val next = entries.firstOrNull()
+    Log.i(
+            "AbsAutoAdvance",
+            "queue installed from $source size=${entries.size} next=${next?.libraryItemId ?: "-"} episode=${next?.episodeId ?: "-"}"
+    )
+  }
+
+  private fun clearPlaybackQueue(generation: Int) {
+    if (playerNotificationService.autoAdvanceGeneration == generation) {
+      playerNotificationService.playbackQueue.clear()
+    }
+  }
+
+  private fun parsePlaybackQueue(call: PluginCall): List<PlaybackQueueEntry> {
+    val array = call.getArray("queue") ?: return emptyList()
+    val entries = ArrayList<PlaybackQueueEntry>(array.length())
+    for (i in 0 until array.length()) {
+      val obj = array.optJSONObject(i) ?: continue
+      val libraryItemId = obj.optString("libraryItemId", "")
+      if (libraryItemId.isEmpty()) continue
+      val episodeId = queueEpisodeId(if (obj.isNull("episodeId")) null else obj.optString("episodeId", ""))
+      entries.add(PlaybackQueueEntry(libraryItemId, episodeId))
+    }
+    return entries
   }
 }
