@@ -134,6 +134,7 @@ import { Capacitor } from '@capacitor/core'
 import { AbsAudioPlayer } from '@/plugins/capacitor'
 import { Dialog } from '@capacitor/dialog'
 import { getAverageColorFromCoverUrl } from '@/utils/coverAverageColor'
+import { dragBounds, dragSeekTime } from '@/utils/dragSeek'
 import WrappingMarquee from '@/assets/WrappingMarquee.js'
 import jumpLabelMixin from '@/mixins/jumpLabel'
 
@@ -651,15 +652,16 @@ export default {
         this.$refs.playedTrack.classList.add('bg-yellow-300')
       }
     },
-    async touchstartCursor(e) {
+    touchstartCursor(e) {
       if (!e || !e.touches || !this.$refs.track || !this.showFullscreen || this.playerSettings.lockUi) return
+      if (e.cancelable) e.preventDefault()
 
-      await this.$hapticsImpact()
       this.isDraggingCursor = true
       this.draggingTouchStartX = e.touches[0].pageX
       this.draggingTouchStartTime = this.currentTime
       this.draggingCurrentTime = this.currentTime
       this.updateTrack()
+      this.$hapticsImpact()
     },
     async playPauseClick() {
       await this.$hapticsImpact()
@@ -744,20 +746,14 @@ export default {
     touchmove(e) {
       if (!this.isDraggingCursor || !e.touches) return
 
-      const distanceMoved = e.touches[0].pageX - this.draggingTouchStartX
-      let duration = this.totalDuration
-      let minTime = 0
-      let maxTime = duration
-      if (this.playerSettings.useChapterTrack && this.currentChapter) {
-        duration = this.currentChapterDuration
-        minTime = this.currentChapter.start
-        maxTime = minTime + duration
-      }
-
-      const trackWidth = this.$refs.track?.clientWidth || this.trackWidth
-      const timePerPixel = duration / trackWidth
-      const newTime = this.draggingTouchStartTime + timePerPixel * distanceMoved
-      this.draggingCurrentTime = Math.min(maxTime, Math.max(minTime, newTime))
+      const bounds = dragBounds(this.playerSettings.useChapterTrack, this.currentChapter, this.totalDuration)
+      this.draggingCurrentTime = dragSeekTime({
+        startTime: this.draggingTouchStartTime,
+        startX: this.draggingTouchStartX,
+        pageX: e.touches[0].pageX,
+        trackWidth: this.$refs.track?.clientWidth || this.trackWidth,
+        ...bounds
+      })
 
       this.updateTimestamp()
       this.updateTrack()
