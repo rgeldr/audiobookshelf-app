@@ -69,4 +69,13 @@ class PlaybackQueueTest {
     assertTrue(shouldStartQueuedItem("local_server-id", blockMeteredRemote = true))
     assertTrue(shouldStartQueuedItem("server-id", blockMeteredRemote = false))
   }
+
+  @Test
+  fun androidJsonNullEpisodeIdIsNotAnEpisode() {
+    // Android JSONObject.optString returns the string "null" for a JSON null.
+    assertNull(queueEpisodeId("null"))
+    assertNull(queueEpisodeId(""))
+    assertNull(queueEpisodeId(null))
+    assertEquals("ep-1", queueEpisodeId("ep-1"))
+  }
 }

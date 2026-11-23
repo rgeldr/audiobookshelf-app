@@ -84,6 +84,11 @@ class AbsAudioPlayerWeb extends WebPlugin {
     return false
   }
 
+  // PluginMethod. Android installs the queue natively. Web playback does not auto-advance.
+  async setPlaybackQueue() {
+    return false
+  }
+
   // PluginMethod
   async playPause() {
     if (!this.player) return

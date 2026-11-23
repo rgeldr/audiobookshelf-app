@@ -12,7 +12,7 @@
 import { AbsAudioPlayer, AbsLogger } from '@/plugins/capacitor'
 import { Dialog } from '@capacitor/dialog'
 import CellularPermissionHelpers from '@/mixins/cellularPermissionHelpers'
-import { queueAfter } from '@/utils/playbackQueue'
+import { playRequestAction, queueAfter } from '@/utils/playbackQueue'
 
 export default {
   data() {
@@ -225,11 +225,22 @@ export default {
         }
       }
 
-      // if already playing this item then jump to start time
-      if (this.$store.getters['getIsMediaStreaming'](libraryItemId, episodeId)) {
+      let queue = Array.isArray(payload.queue) ? payload.queue : null
+      if (payload.seriesId && payload.seriesLibraryId) {
+        const startedId = payload.serverLibraryItemId || libraryItemId
+        queue = await this.buildSeriesQueue(payload.seriesId, payload.seriesLibraryId, startedId)
+      }
+
+      const alreadyStreaming = this.$store.getters['getIsMediaStreaming'](libraryItemId, episodeId)
+      const action = playRequestAction(alreadyStreaming, queue)
+      if (action !== 'prepare') {
+        if (action === 'install-queue') {
+          await AbsAudioPlayer.setPlaybackQueue({ queue }).catch((error) => {
+            console.error('Failed to install playback queue', error)
+          })
+        }
         console.log('Already streaming item', startTime)
         if (startTime !== undefined && startTime !== null) {
-          // seek to start time
           AbsAudioPlayer.seek({ value: startTime })
         } else if (this.$refs.audioPlayer) {
           this.$refs.audioPlayer.play()
@@ -246,11 +257,7 @@ export default {
         playbackRate = this.$refs.audioPlayer.currentPlaybackRate || 1
       }
 
-      let queue = Array.isArray(payload.queue) ? payload.queue : []
-      if (payload.seriesId && payload.seriesLibraryId) {
-        const startedId = payload.serverLibraryItemId || libraryItemId
-        queue = await this.buildSeriesQueue(payload.seriesId, payload.seriesLibraryId, startedId)
-      }
+      queue = Array.isArray(queue) ? queue : []
 
       console.log('Called playLibraryItem', libraryItemId)
       const preparePayload = { libraryItemId, episodeId, playWhenReady: startWhenReady, playbackRate, queue }

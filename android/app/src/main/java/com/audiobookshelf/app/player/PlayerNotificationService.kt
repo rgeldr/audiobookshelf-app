@@ -643,14 +643,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   fun handlePlaybackEnded() {
-    Log.d(tag, "handlePlaybackEnded")
-    when (
+    val action =
             playbackEndAction(
                     hasQueueItem = playbackQueue.peek() != null,
                     isPodcastEpisode = currentPlaybackSession?.isPodcastEpisode == true,
                     isAndroidAuto = isAndroidAuto
             )
-    ) {
+    Log.i("AbsAutoAdvance", "ended action=$action queueSize=${playbackQueue.size}")
+    when (action) {
       PlaybackEndAction.Stop -> return
       PlaybackEndAction.PodcastAutoAdvance -> playNextAndroidAutoPodcastEpisode()
       PlaybackEndAction.StartNext -> playNextQueuedItem()
@@ -688,16 +688,17 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             !isUnmeteredNetwork &&
                     deviceSettings.streamingUsingCellular == StreamingUsingCellularSetting.NEVER
     if (!shouldStartQueuedItem(next.libraryItemId, blockMeteredRemote)) {
-      Log.i(tag, "Not starting queued item ${next.libraryItemId} on a metered network")
+      Log.i("AbsAutoAdvance", "not advancing metered remote ${next.libraryItemId}")
       playbackQueue.clear()
       return
     }
+    Log.i("AbsAutoAdvance", "advancing to ${next.libraryItemId} episode=${next.episodeId ?: "-"}")
 
     playbackQueue.poll()
     val generation = autoAdvanceGeneration
     val startNext = {
       if (generation != autoAdvanceGeneration) {
-        Log.d(tag, "Dropping queued playback because a newer play replaced it")
+        Log.i("AbsAutoAdvance", "dropped advance because a newer play replaced it")
       } else {
         Handler(Looper.getMainLooper()).post {
           PlayerListener.lazyIsPlaying = false
@@ -720,7 +721,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (entry.libraryItemId.startsWith("local")) {
       val localLibraryItem = DeviceManager.dbManager.getLocalLibraryItem(entry.libraryItemId)
       if (localLibraryItem == null) {
-        Log.e(tag, "Auto-advance local item not found ${entry.libraryItemId}")
+        Log.i("AbsAutoAdvance", "advance failed for ${entry.libraryItemId} episode=${entry.episodeId ?: "-"} local item missing")
         playbackQueue.clear()
         return
       }
@@ -731,7 +732,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         val podcast = localLibraryItem.media as? Podcast
         episode = podcast?.episodes?.find { it.id == episodeId }
         if (episode == null) {
-          Log.e(tag, "Auto-advance podcast episode not found $episodeId")
+          Log.i("AbsAutoAdvance", "advance failed for ${entry.libraryItemId} episode=${entry.episodeId ?: "-"} episode missing")
           playbackQueue.clear()
           return
         }
@@ -740,7 +741,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       val playbackSession = localLibraryItem.getPlaybackSession(episode, getDeviceInfo())
       preparePlayer(playbackSession, true, playbackRate)
       if (generation == autoAdvanceGeneration && currentPlaybackSession == null) {
-        Log.e(tag, "Auto-advance had no media items for ${entry.libraryItemId}")
+        Log.i("AbsAutoAdvance", "advance failed for ${entry.libraryItemId} episode=${entry.episodeId ?: "-"} no media items")
         playbackQueue.clear()
       }
       return
@@ -749,7 +750,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     apiHandler.playLibraryItem(entry.libraryItemId, entry.episodeId, getPlayItemRequestPayload(false)) {
       if (generation != autoAdvanceGeneration) return@playLibraryItem
       if (it == null) {
-        Log.e(tag, "Auto-advance server play failed for ${entry.libraryItemId}")
+        Log.i("AbsAutoAdvance", "advance failed for ${entry.libraryItemId} episode=${entry.episodeId ?: "-"} server play failed")
         playbackQueue.clear()
       } else {
         Handler(Looper.getMainLooper()).post {
@@ -757,7 +758,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           PlayerListener.lazyIsPlaying = false
           preparePlayer(it, true, playbackRate)
           if (generation == autoAdvanceGeneration && currentPlaybackSession == null) {
-            Log.e(tag, "Auto-advance had no media items for ${entry.libraryItemId}")
+            Log.i("AbsAutoAdvance", "advance failed for ${entry.libraryItemId} episode=${entry.episodeId ?: "-"} no media items")
             playbackQueue.clear()
           }
         }

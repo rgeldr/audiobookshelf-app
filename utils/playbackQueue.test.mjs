@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { queueAfter } from './playbackQueue.js'
+import { playRequestAction, queueAfter } from './playbackQueue.js'
 
 const items = [
   { libraryItemId: 'a', episodeId: null, finished: true },
@@ -32,4 +32,18 @@ test('last item and unknown index produce an empty queue', () => {
 
 test('episode id null stays null', () => {
   assert.equal(queueAfter(items, 0)[0].episodeId, null)
+})
+
+test('header or row play of the item already loaded still installs its queue', () => {
+  const queue = [{ libraryItemId: 'book-2', episodeId: null }]
+  assert.equal(playRequestAction(true, queue), 'install-queue')
+})
+
+test('resuming an open item without a queue does not clear the current queue', () => {
+  assert.equal(playRequestAction(true, null), 'resume')
+  assert.equal(playRequestAction(true, undefined), 'resume')
+})
+
+test('a new item is prepared instead of resumed', () => {
+  assert.equal(playRequestAction(false, [{ libraryItemId: 'book-2', episodeId: null }]), 'prepare')
 })

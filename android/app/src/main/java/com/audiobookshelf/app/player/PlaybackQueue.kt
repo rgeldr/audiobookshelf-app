@@ -41,6 +41,11 @@ fun playbackEndAction(
   return PlaybackEndAction.Stop
 }
 
+fun queueEpisodeId(raw: String?): String? {
+  if (raw.isNullOrEmpty() || raw == "null") return null
+  return raw
+}
+
 fun shouldStartQueuedItem(libraryItemId: String, blockMeteredRemote: Boolean): Boolean {
   if (blockMeteredRemote && !libraryItemId.startsWith("local")) return false
   return true

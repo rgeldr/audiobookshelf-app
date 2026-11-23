@@ -9,6 +9,7 @@ import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.media.MediaEventManager
 import com.audiobookshelf.app.player.CastManager
 import com.audiobookshelf.app.player.PlaybackQueueEntry
+import com.audiobookshelf.app.player.queueEpisodeId
 import com.audiobookshelf.app.player.PlayerListener
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.server.ApiHandler
@@ -478,10 +479,28 @@ class AbsAudioPlayer : Plugin() {
     call.resolve(jsobj)
   }
 
+  @PluginMethod
+  fun setPlaybackQueue(call: PluginCall) {
+    val entries = parsePlaybackQueue(call)
+    playerNotificationService.autoAdvanceGeneration += 1
+    playerNotificationService.playbackQueue.replace(entries)
+    logQueueInstalled("resume", entries)
+    call.resolve()
+  }
+
   private fun installPlaybackQueue(generation: Int, entries: List<PlaybackQueueEntry>): Boolean {
     if (playerNotificationService.autoAdvanceGeneration != generation) return false
     playerNotificationService.playbackQueue.replace(entries)
+    logQueueInstalled("prepare", entries)
     return true
+  }
+
+  private fun logQueueInstalled(source: String, entries: List<PlaybackQueueEntry>) {
+    val next = entries.firstOrNull()
+    Log.i(
+            "AbsAutoAdvance",
+            "queue installed from $source size=${entries.size} next=${next?.libraryItemId ?: "-"} episode=${next?.episodeId ?: "-"}"
+    )
   }
 
   private fun clearPlaybackQueue(generation: Int) {
@@ -497,7 +516,7 @@ class AbsAudioPlayer : Plugin() {
       val obj = array.optJSONObject(i) ?: continue
       val libraryItemId = obj.optString("libraryItemId", "")
       if (libraryItemId.isEmpty()) continue
-      val episodeId = obj.optString("episodeId", "").ifEmpty { null }
+      val episodeId = queueEpisodeId(if (obj.isNull("episodeId")) null else obj.optString("episodeId", ""))
       entries.add(PlaybackQueueEntry(libraryItemId, episodeId))
     }
     return entries
