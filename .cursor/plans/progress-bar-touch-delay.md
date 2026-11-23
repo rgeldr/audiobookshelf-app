@@ -1,6 +1,6 @@
 # Progress bar follows the finger immediately
 
-Status: plan only, not started
+Status: implemented
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -217,12 +217,12 @@ test('a long book keeps the fractional second a partial pixel produces', () => {
     startTime: 0,
     startX: 0,
     pageX: 0.5,
-    trackWidth: 360,
+    trackWidth: 370,
     duration,
     minTime: 0,
     maxTime: duration
   })
-  assert.ok(Math.abs(time - duration / 360 / 2) < 1e-6)
+  assert.ok(Math.abs(time - duration / 370 / 2) < 1e-6)
   assert.ok(!Number.isInteger(time))
 })
 ```
