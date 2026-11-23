@@ -587,8 +587,14 @@ export default {
           if (!value) return
         }
 
+        const playPayload = { libraryItemId, serverLibraryItemId: this.serverLibraryItemId, startTime }
+        const seriesId = this.$route.query.seriesId
+        if (seriesId && this.libraryItem && this.libraryItem.libraryId) {
+          playPayload.seriesId = seriesId
+          playPayload.seriesLibraryId = this.libraryItem.libraryId
+        }
         this.$store.commit('setPlayerIsStartingPlayback', libraryItemId)
-        this.$eventBus.$emit('play-item', { libraryItemId, serverLibraryItemId: this.serverLibraryItemId, startTime })
+        this.$eventBus.$emit('play-item', playPayload)
       }
     },
     itemUpdated(libraryItem) {

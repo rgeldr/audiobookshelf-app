@@ -98,17 +98,7 @@ export default {
         return
       }
 
-      this.$store.commit('setPlayerIsStartingPlayback', this.libraryItemId)
-      if (this.localLibraryItem) {
-        this.$eventBus.$emit('play-item', {
-          libraryItemId: this.localLibraryItem.id,
-          serverLibraryItemId: this.libraryItemId
-        })
-      } else {
-        this.$eventBus.$emit('play-item', {
-          libraryItemId: this.libraryItemId
-        })
-      }
+      this.$emit('playFromHere')
     }
   },
   mounted() {}

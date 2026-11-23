@@ -124,7 +124,11 @@ export default {
     },
     orderBy: String,
     filterBy: String,
-    sortingIgnorePrefix: Boolean
+    sortingIgnorePrefix: Boolean,
+    seriesId: {
+      type: String,
+      default: null
+    }
   },
   data() {
     return {
@@ -490,9 +494,11 @@ export default {
           else if (this.collapsedSeries) router.push(`/bookshelf/series/${this.collapsedSeries.id}`)
           else if (this.localLibraryItem) {
             // Pass local library item id to server page to allow falling back to offline page
-            router.push(`/item/${this.libraryItemId}?localLibraryItemId=${this.localLibraryItemId}`)
+            const seriesQuery = this.seriesId ? `&seriesId=${encodeURIComponent(this.seriesId)}` : ''
+            router.push(`/item/${this.libraryItemId}?localLibraryItemId=${this.localLibraryItemId}${seriesQuery}`)
           } else {
-            router.push(`/item/${this.libraryItemId}`)
+            const seriesQuery = this.seriesId ? `?seriesId=${encodeURIComponent(this.seriesId)}` : ''
+            router.push(`/item/${this.libraryItemId}${seriesQuery}`)
           }
         }
       }

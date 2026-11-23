@@ -50,7 +50,10 @@ export default {
         bookCoverAspectRatio: this.bookCoverAspectRatio,
         isAltViewEnabled: this.altViewEnabled
       }
-      if (this.entityName === 'series-books') props.showSequence = true
+      if (this.entityName === 'series-books') {
+        props.showSequence = true
+        props.seriesId = this.seriesId
+      }
       if (this.entityName === 'books') {
         props.filterBy = this.filterBy
         props.orderBy = this.orderBy

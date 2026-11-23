@@ -12,6 +12,7 @@
 import { AbsAudioPlayer, AbsLogger } from '@/plugins/capacitor'
 import { Dialog } from '@capacitor/dialog'
 import CellularPermissionHelpers from '@/mixins/cellularPermissionHelpers'
+import { queueAfter } from '@/utils/playbackQueue'
 
 export default {
   data() {
@@ -245,8 +246,14 @@ export default {
         playbackRate = this.$refs.audioPlayer.currentPlaybackRate || 1
       }
 
+      let queue = Array.isArray(payload.queue) ? payload.queue : []
+      if (payload.seriesId && payload.seriesLibraryId) {
+        const startedId = payload.serverLibraryItemId || libraryItemId
+        queue = await this.buildSeriesQueue(payload.seriesId, payload.seriesLibraryId, startedId)
+      }
+
       console.log('Called playLibraryItem', libraryItemId)
-      const preparePayload = { libraryItemId, episodeId, playWhenReady: startWhenReady, playbackRate }
+      const preparePayload = { libraryItemId, episodeId, playWhenReady: startWhenReady, playbackRate, queue }
       if (startTime !== undefined && startTime !== null) preparePayload.startTime = startTime
       AbsAudioPlayer.prepareLibraryItem(preparePayload)
         .then((data) => {
@@ -274,6 +281,49 @@ export default {
         .finally(() => {
           this.$store.commit('setPlayerDoneStartingPlayback')
         })
+    },
+    async buildSeriesQueue(seriesId, libraryId, startedId) {
+      const books = []
+      const seenIds = new Set()
+      let page = 0
+      let total = null
+      while (total === null || books.length < total) {
+        const url = `/api/libraries/${libraryId}/items?filter=series.${this.$encode(seriesId)}&sort=sequence&desc=0&minified=1&limit=100&page=${page}`
+        page += 1
+        const payload = await this.$nativeHttp.get(url).catch((error) => {
+          console.error('Failed to load series queue', error)
+          return null
+        })
+        if (!payload || !Array.isArray(payload.results)) return []
+        if (total === null) total = typeof payload.total === 'number' ? payload.total : payload.results.length
+        let added = 0
+        payload.results.forEach((book) => {
+          if (!book || seenIds.has(book.id)) return
+          seenIds.add(book.id)
+          books.push(book)
+          added += 1
+        })
+        if (!added) break
+      }
+
+      const items = []
+      for (const book of books) {
+        if (!(book.media && book.media.numTracks > 0)) continue
+        const progress = this.$store.getters['user/getUserMediaProgress'](book.id)
+        let libraryItemId = book.id
+        const local = await this.$db.getLocalLibraryItem(`local_${book.id}`)
+        if (local) libraryItemId = `local_${book.id}`
+        items.push({
+          libraryItemId,
+          episodeId: null,
+          finished: !!progress?.isFinished
+        })
+      }
+
+      const serverId = String(startedId || '').replace(/^local_/, '')
+      const startIndex = items.findIndex((item) => item.libraryItemId === startedId || item.libraryItemId === `local_${serverId}` || item.libraryItemId === serverId)
+      if (startIndex < 0) return []
+      return queueAfter(items, startIndex)
     },
     pauseItem() {
       if (this.$refs.audioPlayer && this.$refs.audioPlayer.isPlaying) {

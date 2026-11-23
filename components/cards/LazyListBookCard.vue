@@ -71,7 +71,11 @@ export default {
     },
     orderBy: String,
     filterBy: String,
-    sortingIgnorePrefix: Boolean
+    sortingIgnorePrefix: Boolean,
+    seriesId: {
+      type: String,
+      default: null
+    }
   },
   data() {
     return {
@@ -293,7 +297,10 @@ export default {
         var router = this.$router || this.$nuxt.$router
         if (router) {
           if (this.collapsedSeries) router.push(`/bookshelf/series/${this.collapsedSeries.id}`)
-          else router.push(`/item/${this.libraryItemId}`)
+          else {
+            const seriesQuery = this.seriesId ? `?seriesId=${encodeURIComponent(this.seriesId)}` : ''
+            router.push(`/item/${this.libraryItemId}${seriesQuery}`)
+          }
         }
       }
     },
@@ -347,8 +354,13 @@ export default {
           libraryItemId = this.localLibraryItem.id
         }
 
+        const playPayload = { libraryItemId, serverLibraryItemId: this.libraryItemId }
+        if (this.seriesId && this.libraryItem && this.libraryItem.libraryId) {
+          playPayload.seriesId = this.seriesId
+          playPayload.seriesLibraryId = this.libraryItem.libraryId
+        }
         this.store.commit('setPlayerIsStartingPlayback', this.libraryItemId)
-        eventBus.$emit('play-item', { libraryItemId, serverLibraryItemId: this.libraryItemId })
+        eventBus.$emit('play-item', playPayload)
       }
     },
     destroy() {

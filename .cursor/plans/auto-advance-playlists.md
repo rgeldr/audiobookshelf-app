@@ -1,6 +1,6 @@
 # Auto-advance playback through a playlist, series, or collection
 
-Status: plan only, not started
+Status: implemented
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@ Status: plan only, not started
 
 ## Global Constraints
 
-- Plan only until this document is approved. Do not implement while this status line says `plan only, not started`.
+- Implemented on this branch. The decisions below are what shipped.
 - Karpathy guidelines (https://github.com/multica-ai/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md): think before coding, simplicity first, surgical changes, goal-driven verification.
 - Android only. Do not change iOS, the Capacitor web player, or `advplyr/audiobookshelf`.
 - No server change. One playback session is still one library item (`POST /api/items/:id/play` or `POST /api/items/:id/play/:episodeId`).

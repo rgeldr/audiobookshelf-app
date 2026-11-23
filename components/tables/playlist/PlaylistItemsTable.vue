@@ -11,7 +11,7 @@
       <p v-if="totalDuration" class="text-sm text-fg">{{ totalDurationPretty }}</p>
     </div>
     <template v-for="item in items">
-      <tables-playlist-item-table-row :key="item.id" :item="item" :playlist-id="playlistId" @showMore="showMore" />
+      <tables-playlist-item-table-row :key="item.id" :item="item" :playlist-id="playlistId" @showMore="showMore" @playFromHere="$emit('playFromHere', item)" />
     </template>
   </div>
 </template>

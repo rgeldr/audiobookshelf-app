@@ -159,23 +159,10 @@ export default {
       if (this.playerIsStartingPlayback) return
 
       await this.$hapticsImpact()
-      let mediaId = this.episodeId || this.libraryItem.id
       if (this.streamIsPlaying) {
         this.$eventBus.$emit('pause-item')
-      } else if (this.localLibraryItem) {
-        this.$store.commit('setPlayerIsStartingPlayback', mediaId)
-        this.$eventBus.$emit('play-item', {
-          libraryItemId: this.localLibraryItem.id,
-          episodeId: this.localEpisode?.id,
-          serverLibraryItemId: this.libraryItem.id,
-          serverEpisodeId: this.episodeId
-        })
       } else {
-        this.$store.commit('setPlayerIsStartingPlayback', mediaId)
-        this.$eventBus.$emit('play-item', {
-          libraryItemId: this.libraryItem.id,
-          episodeId: this.episodeId
-        })
+        this.$emit('playFromHere')
       }
     }
   },
