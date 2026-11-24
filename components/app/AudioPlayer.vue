@@ -47,10 +47,6 @@
         <covers-book-cover v-if="libraryItem || localLibraryItemCoverSrc" ref="cover" :library-item="libraryItem" :download-cover="localLibraryItemCoverSrc" :width="bookCoverWidth" :book-cover-aspect-ratio="bookCoverAspectRatio" raw @imageLoaded="coverImageLoaded" />
       </div>
 
-      <!-- Sync failed indicator - shows error icon if progress sync failed -->
-      <div v-if="syncStatus === $constants.SyncStatus.FAILED" class="absolute top-0 left-0 w-full h-full flex items-center justify-center z-30" @click.stop="showSyncsFailedDialog">
-        <span class="material-symbols text-error text-3xl">error</span>
-      </div>
     </div>
 
     <!-- Title and author text -->
@@ -132,7 +128,6 @@
 <script>
 import { Capacitor } from '@capacitor/core'
 import { AbsAudioPlayer } from '@/plugins/capacitor'
-import { Dialog } from '@capacitor/dialog'
 import { getAverageColorFromCoverUrl } from '@/utils/coverAverageColor'
 import { dragBounds, dragSeekTime } from '@/utils/dragSeek'
 import WrappingMarquee from '@/assets/WrappingMarquee.js'
@@ -419,13 +414,6 @@ export default {
     }
   },
   methods: {
-    showSyncsFailedDialog() {
-      Dialog.alert({
-        title: this.$strings.HeaderProgressSyncFailed,
-        message: this.$strings.MessageProgressSyncFailed,
-        cancelText: this.$strings.ButtonOk
-      })
-    },
     clickChaptersBtn() {
       if (!this.chapters.length) return
       this.showChapterModal = true
@@ -980,6 +968,7 @@ export default {
     },
     showProgressSyncIsFailing() {
       this.syncStatus = this.$constants.SyncStatus.FAILED
+      this.$toast.error(this.$strings.MessageProgressSyncFailed)
     },
     showProgressSyncSuccess() {
       this.syncStatus = this.$constants.SyncStatus.SUCCESS
