@@ -2518,6 +2518,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             ) {
               super.onCapabilitiesChanged(network, networkCapabilities)
 
+              val wasConnected = hasNetworkConnectivity
               isUnmeteredNetwork =
                       networkCapabilities.hasCapability(
                               NetworkCapabilities.NET_CAPABILITY_NOT_METERED
@@ -2529,11 +2530,15 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               networkCapabilities.hasCapability(
                                       NetworkCapabilities.NET_CAPABILITY_INTERNET
                               )
+              val networkRestored = !wasConnected && hasNetworkConnectivity
               Log.i(
                       tag,
-                      "Network capabilities changed. hasNetworkConnectivity=$hasNetworkConnectivity | isUnmeteredNetwork=$isUnmeteredNetwork"
+                      "Network capabilities changed. hasNetworkConnectivity=$hasNetworkConnectivity | isUnmeteredNetwork=$isUnmeteredNetwork | restored=$networkRestored"
               )
               clientEventEmitter?.onNetworkMeteredChanged(isUnmeteredNetwork)
+              if (networkRestored) {
+                Handler(Looper.getMainLooper()).post { mediaProgressSyncer.onNetworkRestored() }
+              }
               if (hasNetworkConnectivity) {
                 // Force android auto loading if libraries are empty.
                 // Lack of network connectivity is most likely reason for libraries being empty
