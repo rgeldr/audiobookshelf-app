@@ -377,6 +377,7 @@ class MediaProgressSyncer(
     pendingMark = null
     lastSuccessfulSyncAt = System.currentTimeMillis()
     lastSyncTime = lastSuccessfulSyncAt
+    playerNotificationService.markStreamSessionHealthy()
     playerNotificationService.alertSyncSuccess()
     DeviceManager.dbManager.removePlaybackSession(sessionId)
     AbsLogger.info("MediaProgressSyncer", "sync: Successfully synced progress (title: \"$currentDisplayTitle\") (currentTime: $currentTime) (session id: $sessionId) channel=$syncChannel")
@@ -389,7 +390,7 @@ class MediaProgressSyncer(
     val next = syncTargetAfterFailure(attempted, kind)
     syncChannel = next
     pendingServerSync = true
-    failedSyncs++
+    failedSyncs = nextFailedSyncCount(failedSyncs)
     val now = System.currentTimeMillis()
     AbsLogger.error("MediaProgressSyncer", "sync: Progress sync failed kind=$kind channel=$syncChannel continuation=$continuation (count: $failedSyncs) (title: \"$currentDisplayTitle\") (currentTime: $currentTime) (session id: $currentSessionId) (${DeviceManager.serverConnectionConfigName}) ($errorMsg)")
     Log.i(tag, "Progress sync failed kind=$kind channel=$syncChannel continuation=$continuation currentTime=$currentTime; playback continues")
@@ -399,6 +400,9 @@ class MediaProgressSyncer(
     }
     if (attempted == SyncChannel.OpenSession && next == SyncChannel.LocalSession) {
       currentPlaybackSession?.let { sendSavedProgress(it, currentTime) {} }
+    }
+    if (reopenStreamAfterSyncFailure(kind) && !currentIsLocal) {
+      playerNotificationService.recoverLostStreamSession("progress sync $kind ($errorMsg)")
     }
   }
 

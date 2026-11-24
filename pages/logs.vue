@@ -107,7 +107,7 @@ export default {
       return this.logs
         .map((log) => {
           const logMessage = this.maskServerAddress ? log.maskedMessage : log.message
-          return `${this.formatEpochToDatetimeString(log.timestamp)} [${log.level.toUpperCase()}] ${logMessage}`
+          return `${this.formatEpochToDatetimeString(log.timestamp)} [${log.level.toUpperCase()}] [${log.tag}] ${logMessage}`
         })
         .join('\n')
     },
