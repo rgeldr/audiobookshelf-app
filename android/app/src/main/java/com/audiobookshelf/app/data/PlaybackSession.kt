@@ -16,6 +16,7 @@ import com.audiobookshelf.app.media.MediaProgressSyncData
 import com.audiobookshelf.app.player.*
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import kotlin.jvm.Transient
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.MediaMetadata
 import com.google.android.gms.cast.MediaInfo
@@ -206,9 +207,17 @@ class PlaybackSession(
     return Uri.parse("$serverAddress${audioTrack.contentUrl}?token=${DeviceManager.token}")
   }
 
-  /** Bitmap for the cover art, once resolved */
+  /**
+   * Bitmap for the cover art, once resolved. Transient because Paper disables Kryo references,
+   * and Bitmap.mColorSpace is a ColorSpace.Rgb whose clamped transfer function captures the
+   * color space (oetf.andThen(this::clamp)). Writing that cycle overflows the stack.
+   */
   @JsonIgnore
+  @Transient
   private var resolvedCoverBitmap: Bitmap? = null
+
+  @JsonIgnore
+  fun hasResolvedCoverBitmap(): Boolean = resolvedCoverBitmap != null
 
   /**
    * Builds the current session metadata, including the cover art bitmap if it has already been resolved.
