@@ -24,11 +24,45 @@ class DbManager {
   }
 
   fun getDeviceData(): DeviceData {
-    return Paper.book("device").read("data")
-            ?: DeviceData(mutableListOf(), null, DeviceSettings.default(), null)
+    val loaded = try {
+      Paper.book("device").read<DeviceData>("data")
+    } catch (failure: Throwable) {
+      logDeviceDataFailure("DeviceData sanitize: could not read stored device data (${failure.javaClass.simpleName}). In-memory server login is unchanged when it was already loaded")
+      return DeviceData(mutableListOf(), null, DeviceSettings.default(), null)
+    } ?: return DeviceData(mutableListOf(), null, DeviceSettings.default(), null)
+    val attempt = prepareDeviceDataSave(loaded)
+    if (attempt.sanitizeNote != null) {
+      val failure = writeDeviceDataCatching(attempt.stored) { Paper.book("device").write("data", it) }
+      if (failure == null) logDeviceDataInfo(attempt.sanitizeNote)
+      else logDeviceDataFailure("saveDeviceData failed (${failure.javaClass.simpleName}: ${failure.message}). In-memory tokens and playback stay")
+      return attempt.stored
+    }
+    return loaded
   }
   fun saveDeviceData(deviceData: DeviceData) {
-    Paper.book("device").write("data", deviceData)
+    val attempt = prepareDeviceDataSave(deviceData)
+    val failure = writeDeviceDataCatching(attempt.stored) { Paper.book("device").write("data", it) }
+    if (failure == null) {
+      if (attempt.sanitizeNote != null) logDeviceDataInfo(attempt.sanitizeNote)
+    } else {
+      logDeviceDataFailure("saveDeviceData failed (${failure.javaClass.simpleName}: ${failure.message}). In-memory tokens and playback stay")
+    }
+  }
+
+  private fun logDeviceDataInfo(message: String) {
+    try {
+      AbsLogger.info(tag, message)
+    } catch (failure: Throwable) {
+      Log.e(tag, message, failure)
+    }
+  }
+
+  private fun logDeviceDataFailure(message: String) {
+    try {
+      AbsLogger.error(tag, message)
+    } catch (failure: Throwable) {
+      Log.e(tag, message, failure)
+    }
   }
 
   fun getLocalLibraryItems(mediaType: String? = null): MutableList<LocalLibraryItem> {
