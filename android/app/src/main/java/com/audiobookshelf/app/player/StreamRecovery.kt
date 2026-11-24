@@ -27,6 +27,8 @@ fun actionAfterStreamFailure(
   if (!sessionDead && !retriesExhausted) return StreamFailureAction.KeepPlaying
   if (!reopenAlreadyAttempted) return StreamFailureAction.ReopenSession
   if (downloadedCopyAvailable) return StreamFailureAction.PlayDownloadedCopy
+  // An expired access token must not tear the player down. The buffer and the notification stay.
+  if (httpStatus == 401 || httpStatus == 403) return StreamFailureAction.KeepPlaying
   return StreamFailureAction.Close
 }
 
@@ -53,10 +55,39 @@ fun httpStatusFromPlayerError(message: String?): Int? {
   return match.groupValues[1].toIntOrNull()
 }
 
-/** ExoPlayer [com.google.android.exoplayer2.Player.PlayWhenReadyChangeReason] values. */
-fun pauseReasonLabel(reason: Int): String {
+const val PAUSE_IN_APP = "in-app"
+const val PAUSE_MEDIA_BUTTON = "media-button"
+const val PAUSE_HEADSET = "headset"
+const val PAUSE_MEDIA_SESSION = "media-session"
+const val PAUSE_NOTIFICATION = "notification"
+const val PAUSE_PLAYBACK_ENDED = "playback-ended"
+
+@Volatile private var pendingPauseOrigin: String? = null
+
+fun notePauseOrigin(origin: String) {
+  pendingPauseOrigin = origin
+}
+
+fun consumePauseOrigin(pausing: Boolean): String? {
+  val origin = pendingPauseOrigin
+  pendingPauseOrigin = null
+  return if (pausing) origin else null
+}
+
+/** 79 headset hook, 85 play/pause, 127 pause. Lock screen and Bluetooth share [PAUSE_MEDIA_SESSION]. */
+fun pauseOriginForKeyCode(keyCode: Int): String {
+  return if (keyCode == 79) PAUSE_HEADSET else PAUSE_MEDIA_BUTTON
+}
+
+/**
+ * ExoPlayer reports in-app, notification, lock screen, and headset pauses as reason 1.
+ * The origin noted at the call site names those. An untagged reason 1 is the notification
+ * broadcast, which calls `player.pause()` itself.
+ * Reason 3 is the headphone-unplug pause and stays `becoming-noisy`.
+ */
+fun pauseReasonLabel(reason: Int, origin: String? = null): String {
   return when (reason) {
-    1 -> "user"
+    1 -> origin ?: PAUSE_NOTIFICATION
     2 -> "audio-focus-loss"
     3 -> "becoming-noisy"
     4 -> "remote"

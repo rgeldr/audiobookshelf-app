@@ -1,6 +1,7 @@
 package com.audiobookshelf.app.plugins
 
 import android.util.Log
+import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.device.DeviceManager
 import com.fasterxml.jackson.core.json.JsonReadFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -29,7 +30,7 @@ class AbsLogger : Plugin() {
     onLogEmitter = { log:AbsLog ->
       notifyListeners("onLog", JSObject(jacksonMapper.writeValueAsString(log)))
     }
-    info("AbsLogger", "load: AbsLogger plugin initialized")
+    info("AbsLogger", "load: AbsLogger plugin initialized build=${BuildConfig.VERSION_NAME} sha=${BuildConfig.GIT_SHA} built=${BuildConfig.BUILD_TIME}")
   }
 
   companion object {

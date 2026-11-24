@@ -33,7 +33,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
   }
 
   override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-    val label = pauseReasonLabel(reason)
+    val label = pauseReasonLabel(reason, consumePauseOrigin(pausing = !playWhenReady))
     AbsLogger.info(tag, "playWhenReady=$playWhenReady reason=$label")
     Log.i(tag, "playWhenReady=$playWhenReady reason=$label")
   }

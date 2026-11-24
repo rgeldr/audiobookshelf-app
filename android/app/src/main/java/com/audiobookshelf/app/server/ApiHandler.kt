@@ -3,6 +3,8 @@ package com.audiobookshelf.app.server
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -39,12 +41,25 @@ class ApiHandler(var ctx:Context) {
     // For sending data back to the Webview frontend
     lateinit var absDatabaseNotifyListeners:(String, JSObject) -> Unit
 
+    /** One refresh for every ApiHandler in the process, including the WebView plugin and the player. */
+    val refreshGate = TokenRefreshGate()
+    val refreshDeadline = RefreshDeadline()
+    private val timeoutHandler = Handler(Looper.getMainLooper())
+    private val refreshTimeouts = HashMap<Int, Runnable>()
+    @Volatile var lastRefreshRejectedAt: Long = 0L
+
     fun checkAbsDatabaseNotifyListenersInitted():Boolean {
       return ::absDatabaseNotifyListeners.isInitialized
     }
   }
 
-  private var defaultClient = OkHttpClient()
+  private var defaultClient = OkHttpClient.Builder().callTimeout(REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS).build()
+  private val refreshClient =
+          OkHttpClient.Builder()
+                  .callTimeout(REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                  .readTimeout(REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                  .connectTimeout(REFRESH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                  .build()
   private var pingClient = OkHttpClient.Builder().callTimeout(3, TimeUnit.SECONDS).build()
   private var jacksonMapper = jacksonObjectMapper().enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS.mappedFeature())
   private var secureStorage = SecureStorage(ctx)
@@ -175,7 +190,7 @@ class ApiHandler(var ctx:Context) {
    */
   private fun handleTokenRefresh(originalRequest: Request, httpClient: OkHttpClient?, callback: (JSObject) -> Unit) {
     val serverConnectionConfigId = DeviceManager.serverConnectionConfigId
-    refreshAuthTokens(serverConnectionConfigId, httpClient) { result ->
+    refreshAuthTokens(serverConnectionConfigId) { result ->
       if (result is RefreshResult.Success) {
         retryOriginalRequest(originalRequest, result.accessToken, httpClient, callback)
       } else {
@@ -197,15 +212,33 @@ class ApiHandler(var ctx:Context) {
   /** Refreshes tokens for a specific saved server, including downloads queued while another server is active. */
   fun refreshAuthTokens(
           serverConnectionConfigId: String,
-          httpClient: OkHttpClient? = null,
           onResult: (RefreshResult) -> Unit
   ) {
+    val begin = refreshGate.begin { verdict -> onResult(refreshResultFor(verdict)) }
+    when (begin) {
+      is RefreshBegin.Join -> {
+        AbsLogger.info(tag, "Token refresh already in flight generation=${begin.generation}; waiting")
+      }
+      is RefreshBegin.Start -> startRefresh(serverConnectionConfigId, begin.generation, onResult)
+    }
+  }
+
+  private fun startRefresh(
+          serverConnectionConfigId: String,
+          generation: Int,
+          onResult: (RefreshResult) -> Unit
+  ) {
+    val now = System.currentTimeMillis()
+    if (!shouldStartRefresh(lastRefreshRejectedAt, now)) {
+      AbsLogger.info(tag, "Token refresh generation=$generation skipped; last rejection is inside the cooldown. Playback continues")
+      finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult)
+      return
+    }
     val config = DeviceManager.getServerConnectionConfig(serverConnectionConfigId)
     val refreshToken = secureStorage.getRefreshToken(serverConnectionConfigId)
     if (config == null || refreshToken.isNullOrEmpty()) {
-      AbsLogger.error(tag, "No refresh token or server configuration for $serverConnectionConfigId")
-      handleRefreshRejected(serverConnectionConfigId)
-      onResult(RefreshResult.Rejected)
+      AbsLogger.error(tag, "Token refresh generation=$generation has no refresh token for $serverConnectionConfigId. Playback continues")
+      finishRefresh(generation, RefreshVerdict(RefreshOutcome.Rejected, null), null, null, onResult)
       return
     }
     val request = try {
@@ -216,104 +249,155 @@ class ApiHandler(var ctx:Context) {
               .post(EMPTY_REQUEST)
               .build()
     } catch (e: Exception) {
-      AbsLogger.error(tag, "Could not create refresh request for ${config.name}: ${e.message}")
-      onResult(RefreshResult.Transient)
+      AbsLogger.error(tag, "Token refresh generation=$generation could not be built: ${e.message}. Playback continues")
+      finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult)
       return
     }
-    (httpClient ?: defaultClient).newCall(request).enqueue(object : Callback {
+    AbsLogger.info(tag, "Token refresh started generation=$generation server=${config.name}")
+    armRefreshTimeout(generation, onResult)
+    refreshClient.newCall(request).enqueue(object : Callback {
       override fun onFailure(call: Call, e: IOException) {
-        AbsLogger.error(tag, "Token refresh failed for ${config.name}: ${e.message}")
-        onResult(RefreshResult.Transient)
+        Log.e(tag, "Token refresh generation=$generation failed for ${config.name}: ${e.message}")
+        finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult, null)
       }
 
       override fun onResponse(call: Call, response: Response) {
-        response.use {
-          if (!it.isSuccessful) {
-            AbsLogger.error(tag, "Token refresh returned ${it.code} for ${config.name}")
-            if (it.code != 401 && it.code != 403) {
-              onResult(RefreshResult.Transient)
-              return
-            }
-            handleRefreshRejected(serverConnectionConfigId)
-            onResult(RefreshResult.Rejected)
+        val code = response.code
+        val raw = try {
+          response.body?.string()
+        } catch (e: Exception) {
+          Log.e(tag, "Token refresh generation=$generation could not be read: ${e.message}")
+          null
+        } finally {
+          try {
+            response.close()
+          } catch (_: Exception) {}
+        }
+        val outcome = refreshOutcomeForHttp(code)
+        if (outcome != RefreshOutcome.Success) {
+          if (outcome == RefreshOutcome.Rejected) lastRefreshRejectedAt = System.currentTimeMillis()
+          finishRefresh(generation, RefreshVerdict(outcome, null), null, null, onResult, code)
+          return
+        }
+        try {
+          val user = if (raw.isNullOrEmpty()) null else JSONObject(raw).optJSONObject("user")
+          val accessToken = user?.optString("accessToken").orEmpty()
+          if (accessToken.isEmpty()) {
+            Log.e(tag, "Token refresh generation=$generation response had no access token")
+            finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult, code)
             return
           }
-          try {
-            val user = JSONObject(it.body!!.string()).optJSONObject("user")
-            val accessToken = user?.optString("accessToken").orEmpty()
-            if (accessToken.isEmpty()) {
-              AbsLogger.error(tag, "Refresh response had no access token for ${config.name}")
-              onResult(RefreshResult.Transient)
-              return
-            }
-            updateTokens(accessToken, user?.optString("refreshToken").orEmpty().ifEmpty { refreshToken }, serverConnectionConfigId)
-            onResult(RefreshResult.Success(accessToken))
-          } catch (e: Exception) {
-            AbsLogger.error(tag, "Could not parse refresh response for ${config.name}: ${e.message}")
-            onResult(RefreshResult.Transient)
-          }
+          val nextRefresh = user?.optString("refreshToken").orEmpty().ifEmpty { refreshToken }
+          lastRefreshRejectedAt = 0L
+          finishRefresh(generation, RefreshVerdict(RefreshOutcome.Success, accessToken), nextRefresh, serverConnectionConfigId, onResult, code)
+        } catch (e: Exception) {
+          Log.e(tag, "Token refresh generation=$generation could not be parsed: ${e.message}")
+          finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult, code)
         }
       }
     })
   }
 
-  /**
-   * Clears only the server that rejected the refresh token; queued downloads can target a non-active server.
-   *
-   * Only call this when the server explicitly rejected the refresh token. Transient failures should not log the user out
-   */
-  private fun handleRefreshRejected(serverConnectionConfigId: String) {
-    // Must not throw: callers still have to report the refresh result to an in-flight request or download.
-    try {
-      secureStorage.removeRefreshToken(serverConnectionConfigId)
-      if (DeviceManager.serverConnectionConfigId != serverConnectionConfigId) return
-      DeviceManager.serverConnectionConfig = null
-      DeviceManager.deviceData.lastServerConnectionConfigId = null
-      DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
-      if (checkAbsDatabaseNotifyListenersInitted()) {
-        absDatabaseNotifyListeners(
-                "onTokenRefreshFailure",
-                JSObject().put("error", "Token refresh failed").put("serverConnectionConfigId", serverConnectionConfigId))
+  private fun armRefreshTimeout(generation: Int, onResult: (RefreshResult) -> Unit) {
+    refreshDeadline.arm(generation)
+    val timeout = Runnable {
+      if (!refreshDeadline.onFire(generation)) {
+        AbsLogger.info(tag, "Token refresh generation=$generation deadline ignored")
+        return@Runnable
       }
-    } catch (e: Exception) {
-      AbsLogger.error(tag, "Could not clear session for $serverConnectionConfigId: ${e.message}")
+      AbsLogger.error(tag, "Token refresh generation=$generation timed out after ${REFRESH_TIMEOUT_MS}ms. Playback continues")
+      finishRefresh(generation, RefreshVerdict(RefreshOutcome.Transient, null), null, null, onResult, null)
+    }
+    synchronized(refreshTimeouts) { refreshTimeouts[generation] = timeout }
+    timeoutHandler.postDelayed(timeout, REFRESH_TIMEOUT_MS)
+  }
+
+  private fun cancelRefreshTimeout(generation: Int) {
+    refreshDeadline.cancel(generation)
+    val timeout = synchronized(refreshTimeouts) { refreshTimeouts.remove(generation) }
+    if (timeout != null) timeoutHandler.removeCallbacks(timeout)
+  }
+
+  /**
+   * Saves a 200 and releases the caller before any WebView log. A late success still stores the
+   * new token, because the server may already have rotated the refresh token. The deadline is
+   * cancelled here so it cannot turn this generation into a timeout.
+   */
+  private fun finishRefresh(
+          generation: Int,
+          verdict: RefreshVerdict,
+          refreshToken: String?,
+          serverConnectionConfigId: String?,
+          onResult: (RefreshResult) -> Unit,
+          httpCode: Int? = null
+  ) {
+    cancelRefreshTimeout(generation)
+    val saved = if (verdict.outcome == RefreshOutcome.Success && !verdict.accessToken.isNullOrEmpty() && serverConnectionConfigId != null) {
+      persistRefreshedTokens(verdict.accessToken, refreshToken ?: "", serverConnectionConfigId)
+    } else null
+    val won = refreshGate.complete(generation, verdict)
+    if (won && verdict.outcome == RefreshOutcome.Rejected) lastRefreshRejectedAt = System.currentTimeMillis()
+    if (won) onResult(refreshResultFor(verdict))
+    val serverLabel = saved?.serverName ?: serverConnectionConfigId ?: "unknown"
+    if (saved != null) {
+      AbsLogger.info(tag, "Token refresh generation=$generation HTTP ${httpCode ?: 200} outcome=Success server=$serverLabel")
+      AbsLogger.info(tag, "updateTokens: Successfully refreshed auth tokens for server $serverLabel")
+      notifyAccessToken(saved)
+    } else if (httpCode != null) {
+      AbsLogger.info(tag, "Token refresh generation=$generation HTTP $httpCode outcome=${verdict.outcome} server=$serverLabel")
+    }
+    if (!won) {
+      AbsLogger.info(tag, "Token refresh generation=$generation late outcome=${verdict.outcome}; playback continues")
+      return
+    }
+    AbsLogger.info(tag, "Token refresh generation=$generation done outcome=${verdict.outcome}; playback continues")
+  }
+
+  private fun refreshResultFor(verdict: RefreshVerdict): RefreshResult {
+    return when (verdict.outcome) {
+      RefreshOutcome.Success -> RefreshResult.Success(verdict.accessToken.orEmpty())
+      RefreshOutcome.Rejected -> RefreshResult.Rejected
+      RefreshOutcome.Transient -> RefreshResult.Transient
     }
   }
 
   /**
-   * Updates the stored tokens with new access and refresh tokens
-   *
-   * @param newAccessToken The new access token
-   * @param newRefreshToken The new refresh token (or existing one if not provided)
+   * Writes the new tokens before anyone is told. The active server pointer can be null during
+   * reconnect; the saved config is still updated by id.
    */
-  private fun updateTokens(newAccessToken: String, newRefreshToken: String, serverConnectionConfigId: String) {
-    try {
-      // Update the refresh token in secure storage if it's new
-      if (newRefreshToken != secureStorage.getRefreshToken(serverConnectionConfigId)) {
+  private fun persistRefreshedTokens(newAccessToken: String, newRefreshToken: String, serverConnectionConfigId: String): SavedRefresh {
+    return try {
+      if (newRefreshToken.isNotEmpty() && newRefreshToken != secureStorage.getRefreshToken(serverConnectionConfigId)) {
         secureStorage.storeRefreshToken(serverConnectionConfigId, newRefreshToken)
         Log.d(tag, "updateTokens: Updated refresh token in secure storage")
       }
-
-      // The refreshed connection may be queued in the downloader rather than currently active.
-      DeviceManager.getServerConnectionConfig(serverConnectionConfigId)?.let { config ->
+      val config = DeviceManager.getServerConnectionConfig(serverConnectionConfigId)
+      if (config != null) {
         config.token = newAccessToken
+        val active = DeviceManager.serverConnectionConfig
+        if (active == null || active.id == config.id) DeviceManager.serverConnectionConfig = config
         DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
         Log.d(tag, "updateTokens: Updated access token in server connection config")
       }
-
-      // Send access token to Webview frontend
-      if (DeviceManager.serverConnectionConfigId == serverConnectionConfigId && checkAbsDatabaseNotifyListenersInitted()) {
-        val tokenJsObject = JSObject()
-        tokenJsObject.put("accessToken", newAccessToken)
-        absDatabaseNotifyListeners("onTokenRefresh", tokenJsObject)
-      } else {
-        // Can happen if Webview is never run
-        Log.i(tag, "AbsDatabaseNotifyListeners is not initialized so cannot send new access token")
-      }
-      AbsLogger.info(tag, "updateTokens: Successfully refreshed auth tokens for server ${DeviceManager.serverConnectionConfigString}")
+      refreshToSave(200, newAccessToken, newRefreshToken, serverConnectionConfigId, config?.name)
+              ?: SavedRefresh(newAccessToken, newRefreshToken, serverConnectionConfigId, serverConnectionConfigId)
     } catch (e: Exception) {
       Log.e(tag, "updateTokens: Failed to update tokens", e)
-      AbsLogger.error(tag, "updateTokens: Failed to refresh auth tokens for server ${DeviceManager.serverConnectionConfigString} (error: ${e.message})")
+      SavedRefresh(newAccessToken, newRefreshToken, serverConnectionConfigId, serverConnectionConfigId)
+    }
+  }
+
+  private fun notifyAccessToken(saved: SavedRefresh) {
+    if (!checkAbsDatabaseNotifyListenersInitted()) return
+    val activeId = DeviceManager.serverConnectionConfig?.id
+    if (activeId != null && activeId != saved.serverConnectionConfigId) return
+    val payload = JSObject().put("accessToken", saved.accessToken)
+    timeoutHandler.post {
+      try {
+        if (checkAbsDatabaseNotifyListenersInitted()) absDatabaseNotifyListeners("onTokenRefresh", payload)
+      } catch (e: Exception) {
+        Log.e(tag, "updateTokens: Could not tell the WebView about the new access token", e)
+      }
     }
   }
 

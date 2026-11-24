@@ -42,6 +42,8 @@ import com.audiobookshelf.app.media.getUriToAbsIconDrawable
 import com.audiobookshelf.app.media.getUriToDrawable
 import com.audiobookshelf.app.plugins.AbsLogger
 import com.audiobookshelf.app.server.ApiHandler
+import com.audiobookshelf.app.server.mayWaitForRefresh
+import com.audiobookshelf.app.server.planUnpause
 import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
@@ -558,7 +560,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                         .createMediaSource(mediaItems[0])
       } else if (!playbackSession.isHLS) {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Direct playing item ${currentPlaybackSession?.mediaItemId}.")
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
+        val dataSourceFactory = refreshingHttpFactory()
 
         val extractorsFactory = DefaultExtractorsFactory()
         extractorsFactory.setConstantBitrateSeekingEnabled(true)
@@ -569,18 +571,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           extractorsFactory.setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)
         }
 
-        dataSourceFactory.setUserAgent(channelId)
         mediaSource =
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
                         .setLoadErrorHandlingPolicy(streamingLoadErrorPolicy)
                         .createMediaSource(mediaItems[0])
       } else {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing HLS stream of item ${currentPlaybackSession?.mediaItemId}.")
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
-        dataSourceFactory.setUserAgent(channelId)
-        dataSourceFactory.setDefaultRequestProperties(
-                hashMapOf("Authorization" to "Bearer ${DeviceManager.token}")
-        )
+        val dataSourceFactory = refreshingHttpFactory("Bearer ${DeviceManager.token}")
         mediaSource = HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItems[0])
       }
       mPlayer.setMediaSource(mediaSource)
@@ -817,6 +814,33 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  private fun refreshingHttpFactory(authorization: String? = null): com.google.android.exoplayer2.upstream.DataSource.Factory {
+    val base = DefaultHttpDataSource.Factory().setUserAgent(channelId)
+    if (authorization != null) {
+      base.setDefaultRequestProperties(hashMapOf("Authorization" to authorization))
+    }
+    return com.google.android.exoplayer2.upstream.DataSource.Factory {
+      RefreshingHttpDataSource(base.createDataSource()) { refreshAccessTokenBlocking() }
+    }
+  }
+
+  private fun refreshAccessTokenBlocking(): String? {
+    val thread = Thread.currentThread()
+    if (!mayWaitForRefresh(thread.name, Looper.myLooper() == Looper.getMainLooper())) {
+      AbsLogger.error(tag, "Token refresh was not awaited on ${thread.name}; playback continues")
+      apiHandler.refreshAuthTokens(DeviceManager.serverConnectionConfigId) {}
+      return null
+    }
+    val latch = java.util.concurrent.CountDownLatch(1)
+    var token: String? = null
+    apiHandler.refreshAuthTokens(DeviceManager.serverConnectionConfigId) { result ->
+      if (result is com.audiobookshelf.app.server.ApiHandler.RefreshResult.Success) token = result.accessToken
+      latch.countDown()
+    }
+    latch.await(com.audiobookshelf.app.server.REFRESH_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    return token
+  }
+
   private fun getBufferedAheadMs(): Long {
     return try {
       (getBufferedTime() - getCurrentTime()).coerceAtLeast(0L)
@@ -848,6 +872,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     val durationMs = currentItemDurationMs()
     val hold = pausedHoldPositionMs(durationMs)
     Log.i(tag, "Playback ended; holding paused media session at $hold duration=$durationMs")
+    notePauseOrigin(PAUSE_PLAYBACK_ENDED)
     currentPlayer.pause()
     if (hold != null) currentPlayer.seekTo(hold)
     rememberResumeBookmark()
@@ -1226,6 +1251,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             )
 
             Handler(Looper.getMainLooper()).post {
+              notePauseOrigin(PAUSE_MEDIA_SESSION)
               currentPlayer.pause()
               startNewPlaybackSession()
             }
@@ -1285,7 +1311,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.i(tag, "Media button $button action=$action delivery=$delivery player=$player")
     if (mustAcknowledgeMediaButtonStart()) startForegroundForResume()
     when (delivery) {
-      MediaButtonDelivery.Dispatch -> handleTransport(button)
+      MediaButtonDelivery.Dispatch -> handleTransport(button, PAUSE_MEDIA_BUTTON)
       MediaButtonDelivery.KeepPausedNotification -> {
         playerNotificationManager.invalidate()
         Log.i(tag, "Kept the paused media notification in the foreground")
@@ -1301,7 +1327,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
-  fun handleTransport(button: TransportButton) {
+  fun handleTransport(button: TransportButton, pauseOrigin: String = PAUSE_MEDIA_SESSION) {
     val bookmark = DeviceManager.dbManager.getResumeBookmark()
     val action = resumeAction(button, loadedPlayer(), bookmark != null)
     if (action == ResumeAction.ResumeFromBookmark && resumeInFlight) return
@@ -1310,7 +1336,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
     when (action) {
       ResumeAction.PlayLoaded -> resumeLoaded(bookmark)
-      ResumeAction.PauseAndKeep -> pause()
+      ResumeAction.PauseAndKeep -> pause(pauseOrigin)
       ResumeAction.ResumeFromBookmark -> if (bookmark != null) resumeFromBookmark(bookmark)
       ResumeAction.StopAndClear -> closePlayback()
       ResumeAction.Ignore -> {}
@@ -1407,22 +1433,16 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     } else if (player == LoadedPlayer.Ended || (player == LoadedPlayer.Paused && !sameItem)) {
       Log.i(tag, "Play keeps the loaded item player=$player bookmarkMatches=$sameItem")
     }
-    if (session == null || session.isLocal || !DeviceManager.checkConnectivity(ctx)) {
-      play()
-      return
-    }
+    val plan = planUnpause(hasLoadedMedia = true, accessTokenExpired = true)
+    if (!plan.blocksCaller && plan.resumeImmediately) play()
+    if (session == null || session.isLocal || !DeviceManager.checkConnectivity(ctx)) return
     if (warmCheckInFlight) return
     warmCheckInFlight = true
     apiHandler.getPlaybackSession(session.id) { found ->
       Handler(Looper.getMainLooper()).post {
         warmCheckInFlight = false
-        if (!warmResumeNeedsNewServerSession(session.isLocal, found != null)) {
-          play()
-        } else if (bookmark != null) {
-          resumeFromBookmark(bookmark)
-        } else {
-          startNewPlaybackSession()
-        }
+        if (!warmResumeNeedsNewServerSession(session.isLocal, found != null)) return@post
+        if (bookmark != null) resumeFromBookmark(bookmark) else startNewPlaybackSession()
       }
     }
   }
@@ -1520,13 +1540,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     currentPlayer.play()
   }
 
-  fun pause() {
+  fun pause(origin: String) {
+    notePauseOrigin(origin)
     currentPlayer.pause()
   }
 
-  fun playPause(): Boolean {
+  fun playPause(origin: String): Boolean {
     return if (currentPlayer.isPlaying) {
-      pause()
+      pause(origin)
       false
     } else {
       play()

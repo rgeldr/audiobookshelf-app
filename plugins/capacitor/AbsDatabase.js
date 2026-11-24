@@ -83,6 +83,10 @@ class AbsDatabaseWeb extends WebPlugin {
     return ssc
   }
 
+  async refreshAccessToken() {
+    return { error: 'transient' }
+  }
+
   async getRefreshToken({ serverConnectionConfigId }) {
     console.log('[AbsDatabase] Getting refresh token...', serverConnectionConfigId)
     const refreshToken = localStorage.getItem(`refresh_token_${serverConnectionConfigId}`)

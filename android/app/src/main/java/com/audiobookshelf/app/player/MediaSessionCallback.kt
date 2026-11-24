@@ -61,7 +61,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
 
   override fun onPause() {
     Log.d(tag, "ON PAUSE MEDIA SESSION COMPAT")
-    playerNotificationService.handleTransport(TransportButton.Pause)
+    playerNotificationService.handleTransport(TransportButton.Pause, PAUSE_MEDIA_SESSION)
   }
 
   override fun onStop() {
@@ -182,7 +182,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
 //            }
 
             if (0 == mediaButtonClickCount) {
-              playerNotificationService.handleTransport(TransportButton.PlayPause)
+              playerNotificationService.handleTransport(TransportButton.PlayPause, pauseOriginForKeyCode(keyEvent.keyCode))
             }
             handleMediaButtonClickCount()
           }
@@ -203,7 +203,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
           KeyEvent.KEYCODE_HEADSETHOOK -> {
             Log.d(tag, "handleCallMediaButton: Headset Hook")
             if (0 == mediaButtonClickCount) {
-              playerNotificationService.handleTransport(TransportButton.PlayPause)
+              playerNotificationService.handleTransport(TransportButton.PlayPause, pauseOriginForKeyCode(keyEvent.keyCode))
             }
             handleMediaButtonClickCount()
           }
@@ -217,7 +217,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
           KeyEvent.KEYCODE_MEDIA_PAUSE -> {
             Log.d(tag, "handleCallMediaButton: Media Pause")
             if (0 == mediaButtonClickCount) {
-              playerNotificationService.handleTransport(TransportButton.Pause)
+              playerNotificationService.handleTransport(TransportButton.Pause, pauseOriginForKeyCode(keyEvent.keyCode))
             }
             handleMediaButtonClickCount()
           }

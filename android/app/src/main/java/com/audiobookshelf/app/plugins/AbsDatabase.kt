@@ -203,6 +203,20 @@ class AbsDatabase : Plugin() {
   }
 
   @PluginMethod
+  fun refreshAccessToken(call: PluginCall) {
+    val serverConnectionConfigId = call.getString("serverConnectionConfigId") ?: DeviceManager.serverConnectionConfigId
+    apiHandler.refreshAuthTokens(serverConnectionConfigId) { result ->
+      val obj = JSObject()
+      when (result) {
+        is com.audiobookshelf.app.server.ApiHandler.RefreshResult.Success -> obj.put("accessToken", result.accessToken)
+        com.audiobookshelf.app.server.ApiHandler.RefreshResult.Rejected -> obj.put("error", "rejected")
+        com.audiobookshelf.app.server.ApiHandler.RefreshResult.Transient -> obj.put("error", "transient")
+      }
+      call.resolve(obj)
+    }
+  }
+
+  @PluginMethod
   fun getRefreshToken(call:PluginCall) {
     val serverConnectionConfigId = call.getString("serverConnectionConfigId", "").toString()
 
