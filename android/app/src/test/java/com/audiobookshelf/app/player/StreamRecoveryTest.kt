@@ -116,10 +116,17 @@ class StreamRecoveryTest {
 
   @Test
   fun pauseReasonsAreNamed() {
-    assertEquals("user", pauseReasonLabel(1))
-    assertEquals("audio-focus-loss", pauseReasonLabel(2))
+    assertEquals("notification", pauseReasonLabel(1))
+    assertEquals("in-app", pauseReasonLabel(1, PAUSE_IN_APP))
+    assertEquals("media-button", pauseReasonLabel(1, PAUSE_MEDIA_BUTTON))
+    assertEquals("headset", pauseReasonLabel(1, PAUSE_HEADSET))
+    assertEquals("media-session", pauseReasonLabel(1, PAUSE_MEDIA_SESSION))
+    assertEquals("audio-focus-loss", pauseReasonLabel(2, PAUSE_IN_APP))
     assertEquals("becoming-noisy", pauseReasonLabel(3))
     assertEquals("remote", pauseReasonLabel(4))
     assertEquals("end-of-item", pauseReasonLabel(5))
+    assertEquals(PAUSE_HEADSET, pauseOriginForKeyCode(79))
+    assertEquals(PAUSE_MEDIA_BUTTON, pauseOriginForKeyCode(85))
+    assertEquals(PAUSE_MEDIA_BUTTON, pauseOriginForKeyCode(127))
   }
 }

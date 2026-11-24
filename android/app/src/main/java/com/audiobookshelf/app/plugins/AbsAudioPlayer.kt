@@ -11,6 +11,7 @@ import com.audiobookshelf.app.player.CastManager
 import com.audiobookshelf.app.player.PlaybackQueueEntry
 import com.audiobookshelf.app.player.queueEpisodeId
 import com.audiobookshelf.app.player.PlayerListener
+import com.audiobookshelf.app.player.PAUSE_IN_APP
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.server.ApiHandler
 import com.fasterxml.jackson.core.json.JsonReadFeature
@@ -327,7 +328,7 @@ class AbsAudioPlayer : Plugin() {
   @PluginMethod
   fun pausePlayer(call: PluginCall) {
     Handler(Looper.getMainLooper()).post {
-      playerNotificationService.pause()
+      playerNotificationService.pause(PAUSE_IN_APP)
       call.resolve()
     }
   }
@@ -343,7 +344,7 @@ class AbsAudioPlayer : Plugin() {
   @PluginMethod
   fun playPause(call: PluginCall) {
     Handler(Looper.getMainLooper()).post {
-      val playing = playerNotificationService.playPause()
+      val playing = playerNotificationService.playPause(PAUSE_IN_APP)
       call.resolve(JSObject("{\"playing\":$playing}"))
     }
   }
