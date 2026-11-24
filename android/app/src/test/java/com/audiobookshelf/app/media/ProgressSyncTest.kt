@@ -38,6 +38,21 @@ class ProgressSyncTest {
   }
 
   @Test
+  fun failureCountIsNotResetWhenTheNoticeIsShown() {
+    var count = 0
+    val logged = mutableListOf<Int>()
+    repeat(4) {
+      count = nextFailedSyncCount(count)
+      logged += count
+    }
+    assertEquals(listOf(1, 2, 3, 4), logged)
+    assertFalse(reopenStreamAfterSyncFailure(SyncFailureKind.Retryable))
+    assertTrue(reopenStreamAfterSyncFailure(SyncFailureKind.SessionMissing))
+    assertEquals(SyncFailureKind.Retryable, failureKind("timeout"))
+    assertEquals(SyncFailureKind.Retryable, failureKind("Failed to connect to books.example"))
+  }
+
+  @Test
   fun latestLocalMarkWinsAndTheNoticeIsRateLimited() {
     val older = ProgressMark(currentTime = 10.0, updatedAt = 100L)
     val newer = ProgressMark(currentTime = 25.0, updatedAt = 180L)

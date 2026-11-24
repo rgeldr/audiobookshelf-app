@@ -137,6 +137,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   private var warmCheckInFlight = false
   private var suppressResumeBookmark = false
   private var closingPlayback = false
+  private var streamReopenAttempted = false
+  private var streamRecoveryInFlight = false
 
   // The following are used for the shake detection
   private var isShakeSensorRegistered: Boolean = false
@@ -225,6 +227,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.e(tag, "Error unregistering network listening callback $error")
     }
 
+    AbsLogger.info(tag, "onDestroy")
     Log.i(tag, "onDestroy; media session released and widget transport controls hidden")
     isStarted = false
     isClosed = true
@@ -271,6 +274,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
 
     DbManager.initialize(ctx)
+    AbsLogger.info(tag, "onCreate")
 
     // Initialize API
     apiHandler = ApiHandler(ctx)
@@ -451,6 +455,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   ) {
     suppressResumeBookmark = false
     holdingEndedSession = false
+    if (!streamRecoveryInFlight) streamReopenAttempted = false
     if (!isStarted) {
       Log.i(tag, "preparePlayer: foreground service not started - Starting service --")
       Intent(ctx, PlayerNotificationService::class.java).also { intent ->
@@ -509,7 +514,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             }
     mediaSessionConnector.invalidateMediaSessionMetadata()
 
-    AbsLogger.info("PlayerNotificationService", "preparePlayer: Started playback session for item ${currentPlaybackSession?.mediaItemId}. MediaPlayer ${currentPlaybackSession?.mediaPlayer}")
+    AbsLogger.info("PlayerNotificationService", "preparePlayer: Opened session ${currentPlaybackSession?.id} for item ${currentPlaybackSession?.mediaItemId} playMethod=${currentPlaybackSession?.playMethod}. MediaPlayer ${currentPlaybackSession?.mediaPlayer}")
     // Notify client
     clientEventEmitter?.onPlaybackSession(playbackSession)
 
@@ -657,11 +662,12 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   fun handlePlayerPlaybackError(errorMessage: String, errorCode: Int) {
     // A direct-play container the extractor cannot read falls back to transcode.
-    // Network errors stay on this session until the retry policy gives up.
+    // onPlayerError means the retry policy already gave up, or the status was not retryable.
     currentPlaybackSession?.let { playbackSession ->
       if (playbackSession.isDirectPlay && shouldFallbackToTranscode(errorCode)) {
         val playItemRequestPayload = getPlayItemRequestPayload(true)
         Log.d(tag, "Fallback to transcode $playItemRequestPayload.mediaPlayer")
+        AbsLogger.error(tag, "Direct play container failed code=$errorCode; opening a transcode session")
 
         val libraryItemId = playbackSession.libraryItemId ?: "" // Must be true since direct play
         val episodeId = playbackSession.episodeId
@@ -670,6 +676,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             if (it == null) { // Play request failed
               clientEventEmitter?.onPlaybackFailed(errorMessage)
               Log.i(tag, "Closing playback after transcode fallback failed code=$errorCode")
+              AbsLogger.error(tag, "Closing playback after transcode fallback failed code=$errorCode")
               closePlayback(true)
             } else {
               Handler(Looper.getMainLooper()).post { preparePlayer(it, true, null) }
@@ -683,10 +690,138 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                   "Playback error code=$errorCode; not falling back to transcode"
           )
         }
-        clientEventEmitter?.onPlaybackFailed(errorMessage)
-        Log.i(tag, "Closing playback after error code=$errorCode message=$errorMessage")
+        applyStreamFailure(
+                httpStatus = httpStatusFromPlayerError(errorMessage),
+                retriesExhausted = true,
+                reason = "player error code=$errorCode $errorMessage"
+        )
+      }
+    }
+  }
+
+  /** A progress sync 404 means the direct-play URL for this session will fail once the buffer drains. */
+  fun recoverLostStreamSession(reason: String) {
+    applyStreamFailure(httpStatus = 404, retriesExhausted = false, reason = reason)
+  }
+
+  fun markStreamSessionHealthy() {
+    streamReopenAttempted = false
+  }
+
+  private fun applyStreamFailure(httpStatus: Int?, retriesExhausted: Boolean, reason: String) {
+    val session = currentPlaybackSession
+    if (session == null || session.isLocal) {
+      AbsLogger.error(tag, "Stream failure with no server session to reopen ($reason)")
+      if (retriesExhausted) {
+        clientEventEmitter?.onPlaybackFailed(reason)
         closePlayback(true)
       }
+      return
+    }
+    val position = playbackPositionSeconds(session)
+    val downloaded = downloadedSession(session, position) != null
+    val action =
+            actionAfterStreamFailure(
+                    httpStatus = httpStatus,
+                    retriesExhausted = retriesExhausted,
+                    downloadedCopyAvailable = downloaded,
+                    reopenAlreadyAttempted = streamReopenAttempted,
+                    recoveryInFlight = streamRecoveryInFlight
+            )
+    AbsLogger.error(
+            tag,
+            "Stream failure action=$action http=${httpStatus ?: "-"} bufferedHideMs=${bufferedPlaybackRemainingMs(getBufferedAheadMs(), currentPlaybackSpeed())} reason=$reason"
+    )
+    when (action) {
+      StreamFailureAction.KeepPlaying -> return
+      StreamFailureAction.ReopenSession -> reopenPlayback(session, position, reason)
+      StreamFailureAction.PlayDownloadedCopy -> playDownloadedCopy(session, position, reason)
+      StreamFailureAction.Close -> {
+        clientEventEmitter?.onPlaybackFailed(reason)
+        Log.i(tag, "Closing playback after stream failure $reason")
+        closePlayback(true)
+      }
+    }
+  }
+
+  private fun reopenPlayback(session: PlaybackSession, position: Double, reason: String) {
+    val libraryItemId = session.libraryItemId
+    if (libraryItemId.isNullOrEmpty()) {
+      playDownloadedCopy(session, position, reason)
+      return
+    }
+    val speed = currentPlaybackSpeed()
+    val episodeId = session.episodeId
+    val previousSessionId = session.id
+    streamReopenAttempted = true
+    streamRecoveryInFlight = true
+    AbsLogger.error(tag, "Reopening server session at $position after $reason (session $previousSessionId)")
+    mediaProgressSyncer.stop(false) {
+      apiHandler.playLibraryItem(libraryItemId, episodeId, getPlayItemRequestPayload(session.isHLS)) { opened ->
+        Handler(Looper.getMainLooper()).post {
+          if (!streamRecoveryInFlight) return@post
+          if (opened == null) {
+            AbsLogger.error(tag, "Server did not open a new session at $position")
+            streamRecoveryInFlight = false
+            playDownloadedCopy(session, position, reason)
+            return@post
+          }
+          opened.currentTime = position
+          AbsLogger.info(tag, "Opened session ${opened.id} at $position (replaced $previousSessionId)")
+          preparePlayer(opened, true, speed)
+          streamRecoveryInFlight = false
+        }
+      }
+    }
+  }
+
+  private fun playDownloadedCopy(session: PlaybackSession, position: Double, reason: String) {
+    val local = downloadedSession(session, position)
+    if (local == null) {
+      AbsLogger.error(tag, "No downloaded copy for ${session.libraryItemId}; closing playback ($reason)")
+      clientEventEmitter?.onPlaybackFailed(reason)
+      closePlayback(true)
+      return
+    }
+    streamReopenAttempted = true
+    AbsLogger.info(tag, "Playing the downloaded copy of ${session.libraryItemId} at $position")
+    Handler(Looper.getMainLooper()).post { preparePlayer(local, true, currentPlaybackSpeed()) }
+  }
+
+  private fun downloadedSession(session: PlaybackSession, position: Double): PlaybackSession? {
+    val libraryItemId = session.libraryItemId ?: return null
+    val local = DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItemId) ?: return null
+    val episode =
+            session.episodeId?.let { episodeId ->
+              (local.media as? Podcast)?.episodes?.find { it.serverEpisodeId == episodeId || it.id == episodeId }
+            }
+    if (!session.episodeId.isNullOrEmpty() && episode == null) return null
+    if (!local.hasTracks(this, episode)) return null
+    return local.getPlaybackSession(episode, getDeviceInfo()).also { it.currentTime = position }
+  }
+
+  private fun playbackPositionSeconds(session: PlaybackSession): Double {
+    return try {
+      val seconds = getCurrentTimeSeconds()
+      if (seconds > 0.0) seconds else session.currentTime
+    } catch (e: Exception) {
+      session.currentTime
+    }
+  }
+
+  private fun currentPlaybackSpeed(): Float {
+    return try {
+      currentPlayer.playbackParameters.speed
+    } catch (e: Exception) {
+      1f
+    }
+  }
+
+  private fun getBufferedAheadMs(): Long {
+    return try {
+      (getBufferedTime() - getCurrentTime()).coerceAtLeast(0L)
+    } catch (e: Exception) {
+      0L
     }
   }
 
@@ -1457,6 +1592,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (closingPlayback) return
     closingPlayback = true
     holdingEndedSession = false
+    streamRecoveryInFlight = false
+    streamReopenAttempted = false
+    AbsLogger.info(tag, "closePlayback calledOnError=$calledOnError session=${mediaProgressSyncer.currentSessionId}")
     Log.i(tag, "closePlayback calledOnError=$calledOnError; removing the media notification")
     suppressResumeBookmark = true
     autoAdvanceGeneration += 1
@@ -1627,7 +1765,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
       // Reset cache if no longer connected to server or server changed
       if (mediaManager.checkResetServerItems()) {
-        AbsLogger.info(tag, "onGetRoot: Reset Android Auto server items cache (${DeviceManager.serverConnectionConfigString})")
+        AbsLogger.info(tag, "onGetRoot: Reset Android Auto server items cache (${DeviceManager.serverConnectionConfigString}). Playback is unchanged.")
         forceReloadingAndroidAuto = true
       }
 
@@ -2531,10 +2669,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                                       NetworkCapabilities.NET_CAPABILITY_INTERNET
                               )
               val networkRestored = !wasConnected && hasNetworkConnectivity
+              val networkLost = wasConnected && !hasNetworkConnectivity
               Log.i(
                       tag,
                       "Network capabilities changed. hasNetworkConnectivity=$hasNetworkConnectivity | isUnmeteredNetwork=$isUnmeteredNetwork | restored=$networkRestored"
               )
+              if (networkRestored) AbsLogger.info(tag, "Network restored")
+              if (networkLost) AbsLogger.info(tag, "Network lost")
               clientEventEmitter?.onNetworkMeteredChanged(isUnmeteredNetwork)
               if (networkRestored) {
                 Handler(Looper.getMainLooper()).post { mediaProgressSyncer.onNetworkRestored() }
