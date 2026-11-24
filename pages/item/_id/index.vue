@@ -587,7 +587,14 @@ export default {
           if (!value) return
         }
 
-        const playPayload = { libraryItemId, serverLibraryItemId: this.serverLibraryItemId, startTime }
+        const playPayload = {
+          libraryItemId,
+          serverLibraryItemId: this.serverLibraryItemId,
+          startTime,
+          mediaType: this.mediaType,
+          libraryId: this.libraryItem?.libraryId,
+          series: this.series
+        }
         const seriesId = this.$route.query.seriesId
         if (seriesId && this.libraryItem && this.libraryItem.libraryId) {
           playPayload.seriesId = seriesId
