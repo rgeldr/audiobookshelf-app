@@ -1,4 +1,5 @@
 import { AbsDatabase } from './capacitor/AbsDatabase'
+import { AbsLogger } from './capacitor/AbsLogger'
 
 class DbService {
   constructor() {}
@@ -133,11 +134,9 @@ export default ({ app, store }, inject) => {
 
   // Listen for token refresh failure events from native app
   AbsDatabase.addListener('onTokenRefreshFailure', async (data) => {
-    console.log('[db] onTokenRefreshFailure')
-    // Clear store and redirect to login page
-    await store.dispatch('user/logout')
-    if (window.location.pathname !== '/connect') {
-      window.location.href = '/connect?error=refreshTokenFailed&serverConnectionConfigId=' + data.serverConnectionConfigId || ''
-    }
+    const serverConnectionConfigId = data?.serverConnectionConfigId || ''
+    console.log('[db] onTokenRefreshFailure', serverConnectionConfigId)
+    AbsLogger.error({ tag: 'auth', message: `token refresh rejected for ${serverConnectionConfigId}; playback stays up` })
+    store.commit('setAttemptingConnection', false)
   })
 }

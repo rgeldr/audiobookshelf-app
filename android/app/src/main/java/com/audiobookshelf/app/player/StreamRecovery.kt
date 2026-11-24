@@ -27,6 +27,8 @@ fun actionAfterStreamFailure(
   if (!sessionDead && !retriesExhausted) return StreamFailureAction.KeepPlaying
   if (!reopenAlreadyAttempted) return StreamFailureAction.ReopenSession
   if (downloadedCopyAvailable) return StreamFailureAction.PlayDownloadedCopy
+  // An expired access token must not tear the player down. The buffer and the notification stay.
+  if (httpStatus == 401 || httpStatus == 403) return StreamFailureAction.KeepPlaying
   return StreamFailureAction.Close
 }
 

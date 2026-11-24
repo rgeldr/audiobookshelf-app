@@ -17,6 +17,7 @@
 <script>
 import { CapacitorHttp } from '@capacitor/core'
 import { AbsLogger } from '@/plugins/capacitor'
+import { CONNECTION_ATTEMPT_TIMEOUT_MS, connectionAttemptTimedOut } from '@/utils/connectionAttempt'
 
 export default {
   data() {
@@ -161,13 +162,23 @@ export default {
           headers: {
             Authorization: `Bearer ${serverConfig.token}`
           },
-          connectTimeout: 6000,
+          connectTimeout: 10000,
+          readTimeout: 10000,
           serverConnectionConfig: serverConfig
         }
-        const authRes = await this.$nativeHttp.post(`${serverConfig.address}/api/authorize`, null, nativeHttpOptions).catch((error) => {
-          AbsLogger.error({ tag: 'default', message: `attemptConnection: Server auth failed (${serverConfig.name})` })
-          return false
-        })
+        const startedAt = Date.now()
+        const authRes = await Promise.race([
+          this.$nativeHttp.post(`${serverConfig.address}/api/authorize`, null, nativeHttpOptions).catch((error) => {
+            AbsLogger.error({ tag: 'default', message: `attemptConnection: Server auth failed (${serverConfig.name}) ${error}` })
+            return false
+          }),
+          new Promise((resolve) => setTimeout(() => resolve('timeout'), CONNECTION_ATTEMPT_TIMEOUT_MS))
+        ])
+
+        if (authRes === 'timeout' || connectionAttemptTimedOut(Date.now() - startedAt)) {
+          AbsLogger.error({ tag: 'default', message: `attemptConnection timed out after ${Date.now() - startedAt}ms; showing offline` })
+          return
+        }
 
         if (!authRes) {
           this.attemptingConnection = false

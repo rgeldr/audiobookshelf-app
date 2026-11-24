@@ -558,7 +558,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                         .createMediaSource(mediaItems[0])
       } else if (!playbackSession.isHLS) {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Direct playing item ${currentPlaybackSession?.mediaItemId}.")
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
+        val dataSourceFactory = refreshingHttpFactory()
 
         val extractorsFactory = DefaultExtractorsFactory()
         extractorsFactory.setConstantBitrateSeekingEnabled(true)
@@ -569,18 +569,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           extractorsFactory.setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)
         }
 
-        dataSourceFactory.setUserAgent(channelId)
         mediaSource =
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
                         .setLoadErrorHandlingPolicy(streamingLoadErrorPolicy)
                         .createMediaSource(mediaItems[0])
       } else {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing HLS stream of item ${currentPlaybackSession?.mediaItemId}.")
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
-        dataSourceFactory.setUserAgent(channelId)
-        dataSourceFactory.setDefaultRequestProperties(
-                hashMapOf("Authorization" to "Bearer ${DeviceManager.token}")
-        )
+        val dataSourceFactory = refreshingHttpFactory("Bearer ${DeviceManager.token}")
         mediaSource = HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItems[0])
       }
       mPlayer.setMediaSource(mediaSource)
@@ -815,6 +810,27 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     } catch (e: Exception) {
       1f
     }
+  }
+
+  private fun refreshingHttpFactory(authorization: String? = null): com.google.android.exoplayer2.upstream.DataSource.Factory {
+    val base = DefaultHttpDataSource.Factory().setUserAgent(channelId)
+    if (authorization != null) {
+      base.setDefaultRequestProperties(hashMapOf("Authorization" to authorization))
+    }
+    return com.google.android.exoplayer2.upstream.DataSource.Factory {
+      RefreshingHttpDataSource(base.createDataSource()) { refreshAccessTokenBlocking() }
+    }
+  }
+
+  private fun refreshAccessTokenBlocking(): String? {
+    val latch = java.util.concurrent.CountDownLatch(1)
+    var token: String? = null
+    apiHandler.refreshAuthTokens(DeviceManager.serverConnectionConfigId) { result ->
+      if (result is com.audiobookshelf.app.server.ApiHandler.RefreshResult.Success) token = result.accessToken
+      latch.countDown()
+    }
+    latch.await(com.audiobookshelf.app.server.REFRESH_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    return token
   }
 
   private fun getBufferedAheadMs(): Long {
