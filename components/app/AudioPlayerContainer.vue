@@ -12,7 +12,7 @@
 import { AbsAudioPlayer, AbsLogger } from '@/plugins/capacitor'
 import { Dialog } from '@capacitor/dialog'
 import CellularPermissionHelpers from '@/mixins/cellularPermissionHelpers'
-import { playRequestAction, queueAfter } from '@/utils/playbackQueue'
+import { playRequestAction, queueAfter, seriesContinueTarget } from '@/utils/playbackQueue'
 
 export default {
   data() {
@@ -226,9 +226,26 @@ export default {
       }
 
       let queue = Array.isArray(payload.queue) ? payload.queue : null
-      if (payload.seriesId && payload.seriesLibraryId) {
+      let seriesId = payload.seriesId || null
+      let seriesLibraryId = payload.seriesLibraryId || null
+      const continueSeries = seriesContinueTarget({
+        continueSeries: !!this.$store.state.deviceData?.deviceSettings?.continueSeries,
+        queue,
+        seriesId,
+        mediaType: payload.mediaType,
+        series: payload.series,
+        libraryId: payload.libraryId
+      })
+      if (continueSeries) {
+        seriesId = continueSeries.seriesId
+        seriesLibraryId = continueSeries.seriesLibraryId
+      }
+      if (seriesId && seriesLibraryId) {
         const startedId = payload.serverLibraryItemId || libraryItemId
-        queue = await this.buildSeriesQueue(payload.seriesId, payload.seriesLibraryId, startedId)
+        queue = await this.buildSeriesQueue(seriesId, seriesLibraryId, startedId)
+        if (continueSeries) {
+          await AbsLogger.info({ tag: 'AudioPlayerContainer', message: `continue series id=${seriesId} queue size=${queue.length}` })
+        }
       }
 
       const alreadyStreaming = this.$store.getters['getIsMediaStreaming'](libraryItemId, episodeId)
