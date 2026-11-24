@@ -21,8 +21,10 @@ class PauseResumeTest {
           )
 
   @Test
-  fun userPauseDemotesAndKeepsTheNotification() {
-    assertEquals(ForegroundChange.DemoteKeepNotification, foregroundChangeFor(PauseStopReason.UserPause))
+  fun userPauseKeepsTheMediaForegroundService() {
+    // Android 15 drops transport controls when the media session is not a mediaPlayback
+    // foreground service. A pause must leave the service in the foreground.
+    assertEquals(ForegroundChange.None, foregroundChangeFor(PauseStopReason.UserPause))
   }
 
   @Test
@@ -86,7 +88,7 @@ class PauseResumeTest {
     assertTrue(mustForegroundImmediately(ResumeAction.PlayLoaded))
     assertFalse(mustForegroundImmediately(ResumeAction.PauseAndKeep))
     assertEquals(ForegroundChange.Promote, foregroundChangeFor(ResumeAction.ResumeFromBookmark))
-    assertEquals(ForegroundChange.DemoteKeepNotification, foregroundChangeFor(ResumeAction.PauseAndKeep))
+    assertEquals(ForegroundChange.None, foregroundChangeFor(ResumeAction.PauseAndKeep))
     assertEquals(ForegroundChange.RemoveNotification, foregroundChangeFor(ResumeAction.StopAndClear))
   }
 
@@ -319,5 +321,77 @@ class PauseResumeTest {
     assertEquals(TransportButton.PlayPause, transportButton(79))
     assertEquals(TransportButton.Stop, transportButton(86))
     assertEquals(TransportButton.Other, transportButton(0))
+  }
+
+  @Test
+  fun mediaButtonAcknowledgesForegroundAndPauseDoesNotDropIt() {
+    assertTrue(mustAcknowledgeMediaButtonStart())
+    assertFalse(releasesForegroundAfter(MediaButtonDelivery.Dispatch))
+    assertFalse(releasesForegroundAfter(MediaButtonDelivery.KeepPausedNotification))
+    assertTrue(releasesForegroundAfter(MediaButtonDelivery.StopEmptyService))
+  }
+
+  @Test
+  fun foregroundNotificationCarriesTheSessionAndActions() {
+    val spec = mediaNotificationSpec()
+    assertTrue(spec.attachSession)
+    assertTrue(spec.includeTransportActions)
+  }
+
+  @Test
+  fun endedEpisodeReplaysInsteadOfThePreviousBookmark() {
+    assertEquals(
+            ResumeAction.PlayLoaded,
+            resumeAction(TransportButton.Play, LoadedPlayer.Ended, hasBookmark = true)
+    )
+    assertEquals(
+            ResumeAction.PlayLoaded,
+            resumeAction(TransportButton.PlayPause, LoadedPlayer.Ended, hasBookmark = true)
+    )
+    assertTrue(shouldPlayLoadedItemInsteadOfBookmark(LoadedPlayer.Ended, bookmarkMatchesLoaded = false))
+    assertTrue(playRestartsFromBeginning(LoadedPlayer.Ended))
+    assertFalse(playRestartsFromBeginning(LoadedPlayer.Paused))
+    assertTrue(shouldReplayFromStart(LoadedPlayer.Paused, positionMs = 59_000L, durationMs = 60_000L))
+    assertFalse(shouldReplayFromStart(LoadedPlayer.Paused, positionMs = 10_000L, durationMs = 60_000L))
+  }
+
+  @Test
+  fun pausedPodcastDoesNotSwitchToADownloadedBook() {
+    val book = bookmark(savedAt = 100L, position = 50.0)
+    val podcast = LoadedIdentity(
+            serverLibraryItemId = "pod-1",
+            serverEpisodeId = "ep-1",
+            localLibraryItemId = null,
+            localEpisodeId = null
+    )
+    assertFalse(bookmarkMatchesLoadedItem(book, podcast))
+    assertTrue(shouldPlayLoadedItemInsteadOfBookmark(LoadedPlayer.Paused, bookmarkMatchesLoaded = false))
+    assertTrue(shouldPlayLoadedItemInsteadOfBookmark(LoadedPlayer.Ended, bookmarkMatchesLoaded = false))
+  }
+
+  @Test
+  fun pausedBookStillSwitchesToItsOwnDownload() {
+    val book = bookmark(savedAt = 100L, position = 50.0)
+    val loaded = LoadedIdentity(
+            serverLibraryItemId = "lib-1",
+            serverEpisodeId = null,
+            localLibraryItemId = null,
+            localEpisodeId = null
+    )
+    assertTrue(bookmarkMatchesLoadedItem(book, loaded))
+    assertFalse(shouldPlayLoadedItemInsteadOfBookmark(LoadedPlayer.Paused, bookmarkMatchesLoaded = true))
+    assertFalse(shouldPlayLoadedItemInsteadOfBookmark(LoadedPlayer.Empty, bookmarkMatchesLoaded = false))
+  }
+
+  @Test
+  fun endedPlaybackWritesThatItemAndKeepsControls() {
+    assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.Ended))
+    assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.ReadyPaused))
+    assertFalse(shouldWriteResumeBookmark(PlaybackSnapshot.Other))
+    assertTrue(keepTransportControlsAfterEnd(PlaybackEndAction.Stop))
+    assertFalse(keepTransportControlsAfterEnd(PlaybackEndAction.StartNext))
+    assertFalse(keepTransportControlsAfterEnd(PlaybackEndAction.PodcastAutoAdvance))
+    assertEquals(59_000L, pausedHoldPositionMs(60_000L))
+    assertNull(pausedHoldPositionMs(1_000L))
   }
 }
