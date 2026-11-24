@@ -19,9 +19,12 @@ const val STREAMING_BUFFER_LOG_TAG = "StreamingBuffer"
 /** One allocator, two profiles. [PlayerNotificationService] sets [profile] before each prepare. */
 class StreamingLoadControl : LoadControl {
   var profile: BufferProfile = BufferProfile.Direct
+  var mediaDurationMs: Long = 0
 
   private val allocator = DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE)
   private var wasLoading = false
+
+  private fun selectedDurations(): BufferDurations = durationsFor(profile, mediaDurationMs)
 
   override fun onPrepared() {
     wasLoading = false
@@ -45,16 +48,16 @@ class StreamingLoadControl : LoadControl {
 
   override fun getAllocator(): Allocator = allocator
 
-  override fun getBackBufferDurationUs(): Long = durations(profile).backBufferMs * 1000
+  override fun getBackBufferDurationUs(): Long = selectedDurations().backBufferMs * 1000
 
-  override fun retainBackBufferFromKeyframe(): Boolean = durations(profile).backBufferMs > 0
+  override fun retainBackBufferFromKeyframe(): Boolean = selectedDurations().backBufferMs > 0
 
   override fun shouldContinueLoading(
       playbackPositionUs: Long,
       bufferedDurationUs: Long,
       playbackSpeed: Float
   ): Boolean {
-    val selected = durations(profile)
+    val selected = selectedDurations()
     wasLoading =
         com.audiobookshelf.app.player.shouldContinueLoading(
             bufferedDurationUs = bufferedDurationUs,
@@ -74,7 +77,7 @@ class StreamingLoadControl : LoadControl {
       rebuffering: Boolean,
       targetLiveOffsetUs: Long
   ): Boolean {
-    val selected = durations(profile)
+    val selected = selectedDurations()
     return com.audiobookshelf.app.player.shouldStartPlayback(
         bufferedDurationUs = bufferedDurationUs,
         playbackSpeed = playbackSpeed,

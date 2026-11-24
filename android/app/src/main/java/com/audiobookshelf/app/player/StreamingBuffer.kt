@@ -29,6 +29,21 @@ private const val MIN_BUFFER_FLOOR_US = 500_000L
 private const val HLS_AUDIO_BUFFER_BYTES = 13_107_200L
 private const val DIRECT_BUFFER_BYTES = 16L * 1024 * 1024
 
+fun durationsFor(profile: BufferProfile, mediaDurationMs: Long): BufferDurations {
+  val base = durations(profile)
+  if (profile != BufferProfile.Direct || mediaDurationMs <= 0L || mediaDurationMs >= base.minBufferMs) {
+    return base
+  }
+  val cap = maxOf(mediaDurationMs, base.bufferForPlaybackMs)
+  val start = minOf(base.bufferForPlaybackMs, mediaDurationMs).coerceAtLeast(1L)
+  val rebuffer = minOf(base.bufferForPlaybackAfterRebufferMs, mediaDurationMs).coerceAtLeast(1L)
+  return base.copy(
+          minBufferMs = cap,
+          maxBufferMs = cap,
+          bufferForPlaybackMs = start,
+          bufferForPlaybackAfterRebufferMs = rebuffer)
+}
+
 fun durations(profile: BufferProfile): BufferDurations {
   return when (profile) {
     BufferProfile.Direct ->

@@ -79,6 +79,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   private val tag = "PlayerNotificationServ"
+  private var holdingEndedSession = false
 
   interface ClientEventEmitter {
     fun onPlaybackSession(playbackSession: PlaybackSession)
@@ -177,7 +178,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     isStarted = true
-    Log.d(tag, "onStartCommand $startId")
+    Log.i(
+            tag,
+            "onStartCommand action=${intent?.action} startId=$startId foreground=${PlayerNotificationListener.isForegroundService}"
+    )
     if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
       val keyEvent =
               if (Build.VERSION.SDK_INT >= 33) {
@@ -221,7 +225,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.e(tag, "Error unregistering network listening callback $error")
     }
 
-    Log.d(tag, "onDestroy")
+    Log.i(tag, "onDestroy; media session released and widget transport controls hidden")
     isStarted = false
     isClosed = true
     DeviceManager.widgetUpdater?.onPlayerChanged(this)
@@ -446,11 +450,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           playbackRate: Float?
   ) {
     suppressResumeBookmark = false
+    holdingEndedSession = false
     if (!isStarted) {
       Log.i(tag, "preparePlayer: foreground service not started - Starting service --")
       Intent(ctx, PlayerNotificationService::class.java).also { intent ->
         ContextCompat.startForegroundService(ctx, intent)
       }
+      isStarted = true
     }
 
     // TODO: When an item isFinished the currentTime should be reset to 0
@@ -492,6 +498,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     DeviceManager.setLastPlaybackSession(
             playbackSession
     ) // Save playback session to use when app is closed
+    if (!PlayerNotificationListener.isForegroundService) {
+      startForegroundForResume()
+    }
 
     metadataArtJob?.cancel()
     metadataArtJob =
@@ -508,7 +517,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     DeviceManager.widgetUpdater?.onPlayerChanged(this)
 
     if (mediaItems.isEmpty()) {
-      Log.e(tag, "Invalid playback session no media items to play")
+      Log.e(tag, "Invalid playback session no media items to play; leaving the media notification up")
       currentPlaybackSession = null
       return
     }
@@ -517,7 +526,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       val mediaSource: MediaSource
       streamingLoadControl.profile =
               if (playbackSession.isHLS) BufferProfile.Hls else BufferProfile.Direct
-      Log.i(STREAMING_BUFFER_LOG_TAG, "profile=${streamingLoadControl.profile}")
+      streamingLoadControl.mediaDurationMs =
+              if (playbackSession.isHLS || playbackSession.duration <= 0) 0L
+              else (playbackSession.duration * 1000).toLong()
+      Log.i(
+              STREAMING_BUFFER_LOG_TAG,
+              "profile=${streamingLoadControl.profile} mediaDurationMs=${streamingLoadControl.mediaDurationMs}"
+      )
 
       if (playbackSession.isLocal) {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing local item ${currentPlaybackSession?.mediaItemId}.")
@@ -654,6 +669,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           apiHandler.playLibraryItem(libraryItemId, episodeId, playItemRequestPayload) {
             if (it == null) { // Play request failed
               clientEventEmitter?.onPlaybackFailed(errorMessage)
+              Log.i(tag, "Closing playback after transcode fallback failed code=$errorCode")
               closePlayback(true)
             } else {
               Handler(Looper.getMainLooper()).post { preparePlayer(it, true, null) }
@@ -668,6 +684,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           )
         }
         clientEventEmitter?.onPlaybackFailed(errorMessage)
+        Log.i(tag, "Closing playback after error code=$errorCode message=$errorMessage")
         closePlayback(true)
       }
     }
@@ -682,10 +699,24 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             )
     Log.i("AbsAutoAdvance", "ended action=$action queueSize=${playbackQueue.size}")
     when (action) {
-      PlaybackEndAction.Stop -> return
+      PlaybackEndAction.Stop -> {
+        if (keepTransportControlsAfterEnd(action)) holdPausedNearEnd()
+      }
       PlaybackEndAction.PodcastAutoAdvance -> playNextAndroidAutoPodcastEpisode()
       PlaybackEndAction.StartNext -> playNextQueuedItem()
     }
+  }
+
+  private fun holdPausedNearEnd() {
+    if (holdingEndedSession) return
+    holdingEndedSession = true
+    val durationMs = currentItemDurationMs()
+    val hold = pausedHoldPositionMs(durationMs)
+    Log.i(tag, "Playback ended; holding paused media session at $hold duration=$durationMs")
+    currentPlayer.pause()
+    if (hold != null) currentPlayer.seekTo(hold)
+    rememberResumeBookmark()
+    mediaSession.isActive = true
   }
 
   private fun playNextAndroidAutoPodcastEpisode() {
@@ -947,6 +978,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     return currentPlaybackSession?.totalDurationMs ?: 0L
   }
 
+  private fun currentItemDurationMs(): Long {
+    if (::currentPlayer.isInitialized) {
+      val duration = currentPlayer.duration
+      if (duration > 0L) return duration
+    }
+    return getDuration()
+  }
+
   fun getCurrentPlaybackSessionCopy(): PlaybackSession? {
     return currentPlaybackSession?.clone()
   }
@@ -1092,33 +1131,37 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                     queue = playbackQueue.snapshot()
             )
                     ?: return
+    Log.i(
+            tag,
+            "Saved resume bookmark item=${bookmark.libraryItemId} episode=${bookmark.episodeId} local=${bookmark.local} position=${bookmark.positionSeconds}"
+    )
     DeviceManager.dbManager.saveResumeBookmark(bookmark)
   }
 
   fun demotePausedForeground() {
-    if (PlayerNotificationListener.isForegroundService) {
-      stopForeground(Service.STOP_FOREGROUND_DETACH)
-      PlayerNotificationListener.isForegroundService = false
-    }
-    mediaSession.isActive = true
+    Log.w(tag, "demotePausedForeground called; pause keeps the media foreground service")
   }
 
   private fun deliverMediaButton(button: TransportButton) {
     val player = loadedPlayer()
     val bookmark = DeviceManager.dbManager.getResumeBookmark()
     val action = resumeAction(button, player, bookmark != null)
-    when (mediaButtonDelivery(action, PlayerNotificationListener.isForegroundService, player)) {
+    val delivery = mediaButtonDelivery(action, PlayerNotificationListener.isForegroundService, player)
+    Log.i(tag, "Media button $button action=$action delivery=$delivery player=$player")
+    if (mustAcknowledgeMediaButtonStart()) startForegroundForResume()
+    when (delivery) {
       MediaButtonDelivery.Dispatch -> handleTransport(button)
       MediaButtonDelivery.KeepPausedNotification -> {
-        startForegroundForResume()
         playerNotificationManager.invalidate()
-        demotePausedForeground()
+        Log.i(tag, "Kept the paused media notification in the foreground")
       }
       MediaButtonDelivery.StopEmptyService -> {
-        startForegroundForResume()
-        stopForeground(Service.STOP_FOREGROUND_REMOVE)
-        PlayerNotificationListener.isForegroundService = false
-        stopSelf()
+        if (releasesForegroundAfter(delivery)) {
+          Log.i(tag, "Media button with nothing to play; releasing the foreground service")
+          stopForeground(Service.STOP_FOREGROUND_REMOVE)
+          PlayerNotificationListener.isForegroundService = false
+          stopSelf()
+        }
       }
     }
   }
@@ -1142,16 +1185,26 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   private fun loadedPlayer(): LoadedPlayer {
     if (currentPlaybackSession == null || !::currentPlayer.isInitialized) return LoadedPlayer.Empty
     if (currentPlayer.playbackState == Player.STATE_IDLE) return LoadedPlayer.Empty
+    if (currentPlayer.playbackState == Player.STATE_ENDED) return LoadedPlayer.Ended
     return if (currentPlayer.isPlaying) LoadedPlayer.Playing else LoadedPlayer.Paused
   }
 
+  private fun loadedIdentity(session: PlaybackSession): LoadedIdentity {
+    return LoadedIdentity(
+            serverLibraryItemId = session.libraryItemId,
+            serverEpisodeId = session.episodeId,
+            localLibraryItemId = session.localLibraryItem?.id,
+            localEpisodeId = session.localEpisodeId
+    )
+  }
+
   private fun startForegroundForResume() {
-    val notification =
-            NotificationCompat.Builder(this, channelId)
-                    .setSmallIcon(R.drawable.icon_monochrome)
-                    .setContentTitle("Audiobookshelf")
-                    .setOngoing(true)
-                    .build()
+    val spec = mediaNotificationSpec()
+    val notification = PlayerNotificationListener.lastNotification ?: buildMediaForegroundNotification(spec)
+    Log.i(
+            tag,
+            "Posting media foreground notification attachSession=${spec.attachSession} actions=${spec.includeTransportActions} reused=${PlayerNotificationListener.lastNotification != null}"
+    )
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
     } else {
@@ -1159,6 +1212,34 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
     PlayerNotificationListener.isForegroundService = true
     mediaSession.isActive = true
+  }
+
+  private fun buildMediaForegroundNotification(spec: MediaNotificationSpec): Notification {
+    val session = currentPlaybackSession
+    val builder =
+            NotificationCompat.Builder(this, channelId)
+                    .setSmallIcon(R.drawable.icon_monochrome)
+                    .setContentTitle(session?.displayTitle ?: "Audiobookshelf")
+                    .setContentText(session?.displayAuthor)
+                    .setOngoing(true)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+    if (spec.includeTransportActions) {
+      builder.addAction(mediaNotificationAction(android.R.drawable.ic_media_rew, "Rewind", PlaybackStateCompat.ACTION_REWIND))
+      builder.addAction(mediaNotificationAction(android.R.drawable.ic_media_play, "Play", PlaybackStateCompat.ACTION_PLAY_PAUSE))
+      builder.addAction(mediaNotificationAction(android.R.drawable.ic_media_ff, "Fast forward", PlaybackStateCompat.ACTION_FAST_FORWARD))
+    }
+    if (spec.attachSession) {
+      val style = androidx.media.app.NotificationCompat.MediaStyle().setMediaSession(mediaSession.sessionToken)
+      if (spec.includeTransportActions) style.setShowActionsInCompactView(0, 1, 2)
+      builder.setStyle(style)
+    }
+    return builder.build()
+  }
+
+  private fun mediaNotificationAction(icon: Int, title: String, action: Long): NotificationCompat.Action {
+    val pending = androidx.media.session.MediaButtonReceiver.buildMediaButtonPendingIntent(this, action)
+    return NotificationCompat.Action(icon, title, pending)
   }
 
   private fun downloadedItems(): List<DownloadedItem> {
@@ -1178,14 +1259,19 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   private fun resumeLoaded(bookmark: ResumeBookmark?) {
-    if (bookmark != null) {
-      val choice = chooseResume(bookmark, downloadedItems(), loadedPlayer())
+    val player = loadedPlayer()
+    val session = currentPlaybackSession
+    val sameItem = bookmark != null && session != null && bookmarkMatchesLoadedItem(bookmark, loadedIdentity(session))
+    if (bookmark != null && !shouldPlayLoadedItemInsteadOfBookmark(player, sameItem)) {
+      val choice = chooseResume(bookmark, downloadedItems(), player)
       if (choice.source == ResumeSource.LocalFile && !alreadyPlayingLocal(choice)) {
+        Log.i(tag, "Switching the loaded item to its local download")
         playLocalChoice(bookmark, choice)
         return
       }
+    } else if (player == LoadedPlayer.Ended || (player == LoadedPlayer.Paused && !sameItem)) {
+      Log.i(tag, "Play keeps the loaded item player=$player bookmarkMatches=$sameItem")
     }
-    val session = currentPlaybackSession
     if (session == null || session.isLocal || !DeviceManager.checkConnectivity(ctx)) {
       play()
       return
@@ -1289,6 +1375,12 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.d(tag, "Already playing")
       return
     }
+    val durationMs = currentItemDurationMs()
+    val positionMs = currentPlayer.currentPosition
+    if (shouldReplayFromStart(loadedPlayer(), positionMs, durationMs)) {
+      Log.i(tag, "Replaying from the start position=$positionMs duration=$durationMs")
+      currentPlayer.seekTo(0)
+    }
     currentPlayer.volume = 1F
     currentPlayer.play()
   }
@@ -1364,7 +1456,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   fun closePlayback(calledOnError: Boolean? = false) {
     if (closingPlayback) return
     closingPlayback = true
-    Log.d(tag, "closePlayback")
+    holdingEndedSession = false
+    Log.i(tag, "closePlayback calledOnError=$calledOnError; removing the media notification")
     suppressResumeBookmark = true
     autoAdvanceGeneration += 1
     playbackQueue.clear()

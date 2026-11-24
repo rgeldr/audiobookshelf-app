@@ -92,9 +92,23 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     } else {
       Log.d(tag, "SeekBackTime: Player not playing set last pause time | playbackState=${player.playbackState}")
       lastPauseTime = System.currentTimeMillis()
-      if (player.playbackState == Player.STATE_READY) {
+      val snapshot =
+              when (player.playbackState) {
+                Player.STATE_ENDED -> PlaybackSnapshot.Ended
+                Player.STATE_READY -> PlaybackSnapshot.ReadyPaused
+                else -> PlaybackSnapshot.Other
+              }
+      if (shouldWriteResumeBookmark(snapshot)) {
+        Log.i(tag, "Writing resume bookmark snapshot=$snapshot")
         playerNotificationService.rememberResumeBookmark()
+      }
+      if (
+              snapshot == PlaybackSnapshot.ReadyPaused &&
+                      foregroundChangeFor(PauseStopReason.UserPause) == ForegroundChange.DemoteKeepNotification
+      ) {
         playerNotificationService.demotePausedForeground()
+      } else if (snapshot == PlaybackSnapshot.ReadyPaused || snapshot == PlaybackSnapshot.Ended) {
+        Log.i(tag, "Keeping media foreground service snapshot=$snapshot so transport controls stay")
       }
     }
 

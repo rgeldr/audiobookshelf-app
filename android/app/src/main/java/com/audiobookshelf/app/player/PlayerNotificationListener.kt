@@ -11,12 +11,14 @@ class PlayerNotificationListener(var playerNotificationService:PlayerNotificatio
 
   companion object {
     var isForegroundService = false
+    var lastNotification: Notification? = null
   }
 
   override fun onNotificationPosted(
     notificationId: Int,
     notification: Notification,
     onGoing: Boolean) {
+    lastNotification = notification
 
     if (onGoing && !isForegroundService) {
       // Start foreground service
@@ -38,6 +40,7 @@ class PlayerNotificationListener(var playerNotificationService:PlayerNotificatio
     notificationId: Int,
     dismissedByUser: Boolean
   ) {
+    lastNotification = null
     if (dismissedByUser) {
       Log.d(tag, "onNotificationCancelled dismissed by user")
       playerNotificationService.closePlayback()

@@ -31,6 +31,42 @@ class StreamingBufferTest {
   }
 
   @Test
+  fun shortDirectEpisodeDoesNotAskForFiveMinutes() {
+    val oneMinute = durationsFor(BufferProfile.Direct, 60_000)
+    assertEquals(60_000L, oneMinute.minBufferMs)
+    assertEquals(60_000L, oneMinute.maxBufferMs)
+    assertEquals(5_000L, oneMinute.bufferForPlaybackMs)
+    assertEquals(16L * 1024 * 1024, oneMinute.targetBufferBytes)
+
+    val book = durationsFor(BufferProfile.Direct, 10L * 60L * 60L * 1000L)
+    assertEquals(300_000L, book.minBufferMs)
+    assertEquals(300_000L, book.maxBufferMs)
+
+    val unknown = durationsFor(BufferProfile.Direct, 0)
+    assertEquals(300_000L, unknown.minBufferMs)
+
+    val hls = durationsFor(BufferProfile.Hls, 60_000)
+    assertEquals(20_000L, hls.minBufferMs)
+    assertEquals(45_000L, hls.maxBufferMs)
+
+    val clip = durationsFor(BufferProfile.Direct, 3_000)
+    assertEquals(5_000L, clip.minBufferMs)
+    assertEquals(5_000L, clip.maxBufferMs)
+    assertEquals(3_000L, clip.bufferForPlaybackMs)
+    assertEquals(3_000L, clip.bufferForPlaybackAfterRebufferMs)
+  }
+
+  @Test
+  fun loadControlStopsWhenTheEpisodeIsBuffered() {
+    val control = StreamingLoadControl()
+    control.mediaDurationMs = 60_000
+    assertTrue(control.shouldContinueLoading(0, 30_000_000, 1f))
+    assertFalse(control.shouldContinueLoading(0, 60_000_000, 1f))
+    control.mediaDurationMs = 0
+    assertTrue(control.shouldContinueLoading(0, 60_000_000, 1f))
+  }
+
+  @Test
   fun directProfileHoldsFiveMinutesAndSixteenMebibytes() {
     val direct = durations(BufferProfile.Direct)
     assertEquals(300_000L, direct.minBufferMs)

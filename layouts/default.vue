@@ -137,81 +137,87 @@ export default {
       }
       this.attemptingConnection = true
 
-      const deviceData = await this.$db.getDeviceData()
-      let serverConfig = null
-      if (deviceData) {
-        this.$store.commit('globals/setHapticFeedback', deviceData.deviceSettings?.hapticFeedback)
+      try {
+        const deviceData = await this.$db.getDeviceData()
+        let serverConfig = null
+        if (deviceData) {
+          this.$store.commit('globals/setHapticFeedback', deviceData.deviceSettings?.hapticFeedback)
 
-        if (deviceData.lastServerConnectionConfigId && deviceData.serverConnectionConfigs.length) {
-          serverConfig = deviceData.serverConnectionConfigs.find((scc) => scc.id == deviceData.lastServerConnectionConfigId)
+          if (deviceData.lastServerConnectionConfigId && deviceData.serverConnectionConfigs.length) {
+            serverConfig = deviceData.serverConnectionConfigs.find((scc) => scc.id == deviceData.lastServerConnectionConfigId)
+          }
         }
-      }
 
-      if (!serverConfig) {
-        // No last server config set
-        this.attemptingConnection = false
-        AbsLogger.info({ tag: 'default', message: 'attemptConnection: No last server config set' })
-        return
-      }
-
-      AbsLogger.info({ tag: 'default', message: `attemptConnection: Got server config, attempt authorize (${serverConfig.name})` })
-
-      const nativeHttpOptions = {
-        headers: {
-          Authorization: `Bearer ${serverConfig.token}`
-        },
-        connectTimeout: 6000,
-        serverConnectionConfig: serverConfig
-      }
-      const authRes = await this.$nativeHttp.post(`${serverConfig.address}/api/authorize`, null, nativeHttpOptions).catch((error) => {
-        AbsLogger.error({ tag: 'default', message: `attemptConnection: Server auth failed (${serverConfig.name})` })
-        return false
-      })
-
-      if (!authRes) {
-        this.attemptingConnection = false
-        return
-      }
-
-      const { user, userDefaultLibraryId, serverSettings, ereaderDevices } = authRes
-      this.$store.commit('setServerSettings', serverSettings)
-      this.$store.commit('libraries/setEReaderDevices', ereaderDevices)
-
-      if (this.$isValidVersion(serverSettings.version, '2.26.0')) {
-        // Check if the server is using the new JWT auth and is still using an old token in the server config
-        // If so, redirect to /connect and request to re-login
-        if (serverConfig.token === user.token || user.isOldToken) {
+        if (!serverConfig) {
+          // No last server config set
           this.attemptingConnection = false
-          AbsLogger.info({ tag: 'default', message: `attemptConnection: Server is using new JWT auth but config is still using an old token (server version: ${serverSettings.version}) (${serverConfig.name})` })
-          // Clear last server config
-          await this.$store.dispatch('user/logout')
-          this.$router.push(`/connect?error=oldAuthToken&serverConnectionConfigId=${serverConfig.id}`)
+          AbsLogger.info({ tag: 'default', message: 'attemptConnection: No last server config set' })
           return
         }
 
-        // Token may have been refreshed during the authorize call so refetch from store
-        serverConfig.token = this.$store.getters['user/getToken'] || serverConfig.token
+        AbsLogger.info({ tag: 'default', message: `attemptConnection: Got server config, attempt authorize (${serverConfig.name})` })
+
+        const nativeHttpOptions = {
+          headers: {
+            Authorization: `Bearer ${serverConfig.token}`
+          },
+          connectTimeout: 6000,
+          serverConnectionConfig: serverConfig
+        }
+        const authRes = await this.$nativeHttp.post(`${serverConfig.address}/api/authorize`, null, nativeHttpOptions).catch((error) => {
+          AbsLogger.error({ tag: 'default', message: `attemptConnection: Server auth failed (${serverConfig.name})` })
+          return false
+        })
+
+        if (!authRes) {
+          this.attemptingConnection = false
+          return
+        }
+
+        const { user, userDefaultLibraryId, serverSettings, ereaderDevices } = authRes
+        this.$store.commit('setServerSettings', serverSettings)
+        this.$store.commit('libraries/setEReaderDevices', ereaderDevices)
+
+        if (this.$isValidVersion(serverSettings.version, '2.26.0')) {
+          // Check if the server is using the new JWT auth and is still using an old token in the server config
+          // If so, redirect to /connect and request to re-login
+          if (serverConfig.token === user.token || user.isOldToken) {
+            this.attemptingConnection = false
+            AbsLogger.info({ tag: 'default', message: `attemptConnection: Server is using new JWT auth but config is still using an old token (server version: ${serverSettings.version}) (${serverConfig.name})` })
+            // Clear last server config
+            await this.$store.dispatch('user/logout')
+            this.$router.push(`/connect?error=oldAuthToken&serverConnectionConfigId=${serverConfig.id}`)
+            return
+          }
+
+          // Token may have been refreshed during the authorize call so refetch from store
+          serverConfig.token = this.$store.getters['user/getToken'] || serverConfig.token
+        }
+
+        // Set library - Use last library if set and available fallback to default user library
+        const lastLibraryId = await this.$localStore.getLastLibraryId()
+        if (lastLibraryId && (!user.librariesAccessible.length || user.librariesAccessible.includes(lastLibraryId))) {
+          this.$store.commit('libraries/setCurrentLibrary', lastLibraryId)
+        } else if (userDefaultLibraryId) {
+          this.$store.commit('libraries/setCurrentLibrary', userDefaultLibraryId)
+        }
+        serverConfig.version = serverSettings.version
+        const serverConnectionConfig = await this.$db.setServerConnectionConfig(serverConfig)
+
+        this.$store.commit('user/setUser', user)
+        this.$store.commit('user/setAccessToken', serverConnectionConfig.token)
+        this.$store.commit('user/setServerConnectionConfig', serverConnectionConfig)
+
+        this.$socket.connect(serverConnectionConfig.address, serverConnectionConfig.token)
+
+        AbsLogger.info({ tag: 'default', message: `attemptConnection: Successful connection to last saved server config (${serverConnectionConfig.name})` })
+        await this.initLibraries()
+      } catch (error) {
+        console.error('[default] attemptConnection failed', error)
+        AbsLogger.error({ tag: 'default', message: `attemptConnection failed: ${error}` })
+      } finally {
+        this.attemptingConnection = false
       }
-
-      // Set library - Use last library if set and available fallback to default user library
-      const lastLibraryId = await this.$localStore.getLastLibraryId()
-      if (lastLibraryId && (!user.librariesAccessible.length || user.librariesAccessible.includes(lastLibraryId))) {
-        this.$store.commit('libraries/setCurrentLibrary', lastLibraryId)
-      } else if (userDefaultLibraryId) {
-        this.$store.commit('libraries/setCurrentLibrary', userDefaultLibraryId)
-      }
-      serverConfig.version = serverSettings.version
-      const serverConnectionConfig = await this.$db.setServerConnectionConfig(serverConfig)
-
-      this.$store.commit('user/setUser', user)
-      this.$store.commit('user/setAccessToken', serverConnectionConfig.token)
-      this.$store.commit('user/setServerConnectionConfig', serverConnectionConfig)
-
-      this.$socket.connect(serverConnectionConfig.address, serverConnectionConfig.token)
-
-      AbsLogger.info({ tag: 'default', message: `attemptConnection: Successful connection to last saved server config (${serverConnectionConfig.name})` })
-      await this.initLibraries()
-      this.attemptingConnection = false
     },
     itemRemoved(libraryItem) {
       if (this.$route.name.startsWith('item')) {
@@ -228,12 +234,15 @@ export default {
         return
       }
       this.inittingLibraries = true
-      await this.$store.dispatch('libraries/load')
+      try {
+        await this.$store.dispatch('libraries/load')
 
-      AbsLogger.info({ tag: 'default', message: `initLibraries loading library ${this.currentLibraryName}` })
-      await this.$store.dispatch('libraries/fetch', this.currentLibraryId)
-      this.$eventBus.$emit('library-changed')
-      this.inittingLibraries = false
+        AbsLogger.info({ tag: 'default', message: `initLibraries loading library ${this.currentLibraryName}` })
+        await this.$store.dispatch('libraries/fetch', this.currentLibraryId)
+        this.$eventBus.$emit('library-changed')
+      } finally {
+        this.inittingLibraries = false
+      }
     },
     async syncLocalSessions(isFirstSync) {
       if (!this.user) {

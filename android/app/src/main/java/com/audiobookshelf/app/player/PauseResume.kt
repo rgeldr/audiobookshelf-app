@@ -25,8 +25,24 @@ enum class TransportButton {
 enum class LoadedPlayer {
   Empty,
   Paused,
-  Playing
+  Playing,
+  Ended
 }
+
+enum class PlaybackSnapshot {
+  ReadyPaused,
+  Ended,
+  Other
+}
+
+data class LoadedIdentity(
+        val serverLibraryItemId: String?,
+        val serverEpisodeId: String?,
+        val localLibraryItemId: String?,
+        val localEpisodeId: String?
+)
+
+data class MediaNotificationSpec(val attachSession: Boolean, val includeTransportActions: Boolean)
 
 enum class ResumeAction {
   PlayLoaded,
@@ -73,14 +89,16 @@ data class ResumeChoice(
 )
 
 fun foregroundChangeFor(reason: PauseStopReason): ForegroundChange {
-  if (reason == PauseStopReason.UserPause) return ForegroundChange.DemoteKeepNotification
+  // A user pause keeps the mediaPlayback foreground service. Android 15 shows the
+  // session metadata with no transport controls once that service is no longer foreground.
+  if (reason == PauseStopReason.UserPause) return ForegroundChange.None
   return ForegroundChange.RemoveNotification
 }
 
 fun foregroundChangeFor(action: ResumeAction): ForegroundChange {
   return when (action) {
     ResumeAction.PlayLoaded, ResumeAction.ResumeFromBookmark -> ForegroundChange.Promote
-    ResumeAction.PauseAndKeep -> ForegroundChange.DemoteKeepNotification
+    ResumeAction.PauseAndKeep -> ForegroundChange.None
     ResumeAction.StopAndClear -> ForegroundChange.RemoveNotification
     ResumeAction.Ignore -> ForegroundChange.None
   }
@@ -97,7 +115,7 @@ fun resumeAction(button: TransportButton, player: LoadedPlayer, hasBookmark: Boo
               LoadedPlayer.Playing ->
                       if (button == TransportButton.Play) ResumeAction.Ignore
                       else ResumeAction.PauseAndKeep
-              LoadedPlayer.Paused -> ResumeAction.PlayLoaded
+              LoadedPlayer.Paused, LoadedPlayer.Ended -> ResumeAction.PlayLoaded
               LoadedPlayer.Empty ->
                       if (hasBookmark) ResumeAction.ResumeFromBookmark else ResumeAction.Ignore
             }
@@ -112,6 +130,54 @@ enum class MediaButtonDelivery {
   Dispatch,
   KeepPausedNotification,
   StopEmptyService
+}
+
+fun mustAcknowledgeMediaButtonStart(): Boolean = true
+
+fun releasesForegroundAfter(delivery: MediaButtonDelivery): Boolean {
+  return delivery == MediaButtonDelivery.StopEmptyService
+}
+
+fun mediaNotificationSpec(): MediaNotificationSpec {
+  return MediaNotificationSpec(attachSession = true, includeTransportActions = true)
+}
+
+fun shouldPlayLoadedItemInsteadOfBookmark(player: LoadedPlayer, bookmarkMatchesLoaded: Boolean): Boolean {
+  if (player == LoadedPlayer.Empty) return false
+  if (player == LoadedPlayer.Ended || player == LoadedPlayer.Playing) return true
+  return !bookmarkMatchesLoaded
+}
+
+fun playRestartsFromBeginning(player: LoadedPlayer): Boolean = player == LoadedPlayer.Ended
+
+fun shouldReplayFromStart(player: LoadedPlayer, positionMs: Long, durationMs: Long): Boolean {
+  if (playRestartsFromBeginning(player)) return true
+  if (durationMs <= 0L) return false
+  return durationMs - positionMs <= 1_500L
+}
+
+fun bookmarkMatchesLoadedItem(bookmark: ResumeBookmark, loaded: LoadedIdentity): Boolean {
+  if (bookmark.local && loaded.localLibraryItemId != null) {
+    return loaded.localLibraryItemId == bookmark.libraryItemId &&
+            loaded.localEpisodeId == bookmark.episodeId
+  }
+  val bookmarkItem = bookmark.serverLibraryItemId ?: if (!bookmark.local) bookmark.libraryItemId else null
+  val bookmarkEpisode = bookmark.serverEpisodeId ?: if (!bookmark.local) bookmark.episodeId else null
+  if (bookmarkItem == null || loaded.serverLibraryItemId == null) return false
+  return loaded.serverLibraryItemId == bookmarkItem && loaded.serverEpisodeId == bookmarkEpisode
+}
+
+fun shouldWriteResumeBookmark(snapshot: PlaybackSnapshot): Boolean {
+  return snapshot == PlaybackSnapshot.ReadyPaused || snapshot == PlaybackSnapshot.Ended
+}
+
+fun keepTransportControlsAfterEnd(action: PlaybackEndAction): Boolean {
+  return action == PlaybackEndAction.Stop
+}
+
+fun pausedHoldPositionMs(durationMs: Long): Long? {
+  if (durationMs <= 1_500L) return null
+  return durationMs - 1_000L
 }
 
 fun mediaButtonDelivery(
