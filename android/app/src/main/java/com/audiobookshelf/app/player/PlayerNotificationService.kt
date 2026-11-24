@@ -49,6 +49,7 @@ import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector.Cust
 import com.google.android.exoplayer2.ext.mediasession.TimelineQueueNavigator
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
 import com.google.android.exoplayer2.extractor.mp3.Mp3Extractor
+import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
@@ -110,6 +111,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   lateinit var apiHandler: ApiHandler
 
   lateinit var mPlayer: ExoPlayer
+  private lateinit var streamingLoadControl: StreamingLoadControl
+  private val streamingLoadErrorPolicy = StreamingLoadErrorPolicy()
   lateinit var currentPlayer: Player
   var castPlayer: CastPlayer? = null
 
@@ -408,19 +411,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   private fun initializeMPlayer() {
-    val customLoadControl: LoadControl =
-            DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(
-                            1000 * 20, // 20s min buffer
-                            1000 * 45, // 45s max buffer
-                            1000 * 5, // 5s playback start
-                            1000 * 20 // 20s playback rebuffer
-                    )
-                    .build()
+    streamingLoadControl = StreamingLoadControl()
+    val mediaSourceFactory =
+            DefaultMediaSourceFactory(this).setLoadErrorHandlingPolicy(streamingLoadErrorPolicy)
 
     mPlayer =
             ExoPlayer.Builder(this)
-                    .setLoadControl(customLoadControl)
+                    .setLoadControl(streamingLoadControl)
+                    .setMediaSourceFactory(mediaSourceFactory)
                     .setSeekBackIncrementMs(deviceSettings.jumpBackwardsTimeMs)
                     .setSeekForwardIncrementMs(deviceSettings.jumpForwardTimeMs)
                     .build()
@@ -517,6 +515,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
     if (mPlayer == currentPlayer) {
       val mediaSource: MediaSource
+      streamingLoadControl.profile =
+              if (playbackSession.isHLS) BufferProfile.Hls else BufferProfile.Direct
+      Log.i(STREAMING_BUFFER_LOG_TAG, "profile=${streamingLoadControl.profile}")
 
       if (playbackSession.isLocal) {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing local item ${currentPlaybackSession?.mediaItemId}.")
@@ -533,6 +534,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
         mediaSource =
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+                        .setLoadErrorHandlingPolicy(streamingLoadErrorPolicy)
                         .createMediaSource(mediaItems[0])
       } else if (!playbackSession.isHLS) {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Direct playing item ${currentPlaybackSession?.mediaItemId}.")
@@ -550,6 +552,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         dataSourceFactory.setUserAgent(channelId)
         mediaSource =
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+                        .setLoadErrorHandlingPolicy(streamingLoadErrorPolicy)
                         .createMediaSource(mediaItems[0])
       } else {
         AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing HLS stream of item ${currentPlaybackSession?.mediaItemId}.")
@@ -637,10 +640,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     mediaSessionConnector.setEnabledPlaybackActions(playbackActions)
   }
 
-  fun handlePlayerPlaybackError(errorMessage: String) {
-    // On error and was attempting to direct play - fallback to transcode
+  fun handlePlayerPlaybackError(errorMessage: String, errorCode: Int) {
+    // A direct-play container the extractor cannot read falls back to transcode.
+    // Network errors stay on this session until the retry policy gives up.
     currentPlaybackSession?.let { playbackSession ->
-      if (playbackSession.isDirectPlay) {
+      if (playbackSession.isDirectPlay && shouldFallbackToTranscode(errorCode)) {
         val playItemRequestPayload = getPlayItemRequestPayload(true)
         Log.d(tag, "Fallback to transcode $playItemRequestPayload.mediaPlayer")
 
@@ -657,6 +661,12 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           }
         }
       } else {
+        if (playbackSession.isDirectPlay) {
+          Log.i(
+                  STREAMING_BUFFER_LOG_TAG,
+                  "Playback error code=$errorCode; not falling back to transcode"
+          )
+        }
         clientEventEmitter?.onPlaybackFailed(errorMessage)
         closePlayback(true)
       }

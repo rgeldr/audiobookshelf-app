@@ -20,7 +20,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
   override fun onPlayerError(error: PlaybackException) {
     val errorMessage = error.message ?: "Unknown Error"
     Log.e(tag, "onPlayerError $errorMessage")
-    playerNotificationService.handlePlayerPlaybackError(errorMessage) // If was direct playing session, fallback to transcode
+    playerNotificationService.handlePlayerPlaybackError(errorMessage, error.errorCode)
   }
 
   override fun onPositionDiscontinuity(
