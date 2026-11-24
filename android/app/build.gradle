@@ -38,6 +38,19 @@ android {
     targetSdkVersion rootProject.ext.targetSdkVersion
     versionCode 121
     versionName "0.14.2-beta"
+    def gitSha = "unknown"
+    try {
+      def proc = ["git", "-C", rootProject.projectDir.parentFile.absolutePath, "rev-parse", "--short", "HEAD"].execute()
+      proc.waitFor()
+      if (proc.exitValue() == 0) {
+        def sha = proc.text.trim()
+        if (sha) gitSha = sha
+      }
+    } catch (Exception ignored) {}
+    def buildStamp = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    buildStamp.timeZone = java.util.TimeZone.getTimeZone("UTC")
+    buildConfigField "String", "GIT_SHA", "\"${gitSha}\""
+    buildConfigField "String", "BUILD_TIME", "\"${buildStamp.format(new Date())}\""
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
       "appAuthRedirectScheme": "com.audiobookshelf.app"

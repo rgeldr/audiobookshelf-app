@@ -12,7 +12,7 @@
     "ionic:build": "npm run build",
     "ionic:serve": "npm run dev",
     "devlive": "ionic cap run -l --external --port=1337",
-    "test": "node --test utils/playbackQueue.test.mjs utils/dragSeek.test.mjs utils/playlistDownload.test.mjs"
+    "test": "node --test utils/playbackQueue.test.mjs utils/dragSeek.test.mjs utils/playlistDownload.test.mjs utils/connectionAttempt.test.mjs"
   },
   "dependencies": {
     "@webnativellc/capacitor-filesharer": "7.0.4",

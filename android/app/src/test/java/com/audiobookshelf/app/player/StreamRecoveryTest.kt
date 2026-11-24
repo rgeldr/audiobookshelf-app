@@ -65,6 +65,18 @@ class StreamRecoveryTest {
   }
 
   @Test
+  fun anExpiredAccessTokenDoesNotClosePlayback() {
+    assertEquals(
+        StreamFailureAction.KeepPlaying,
+        actionAfterStreamFailure(
+            httpStatus = 401,
+            retriesExhausted = true,
+            downloadedCopyAvailable = false,
+            reopenAlreadyAttempted = true,
+            recoveryInFlight = false))
+  }
+
+  @Test
   fun anErrorWhileReopenIsInFlightDoesNotClose() {
     assertEquals(
         StreamFailureAction.KeepPlaying,
