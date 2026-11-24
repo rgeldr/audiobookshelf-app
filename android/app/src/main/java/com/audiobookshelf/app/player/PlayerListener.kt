@@ -4,6 +4,7 @@ import android.util.Log
 import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.data.PlayerState
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.plugins.AbsLogger
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 
@@ -18,9 +19,23 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
   }
 
   override fun onPlayerError(error: PlaybackException) {
-    val errorMessage = error.message ?: "Unknown Error"
-    Log.e(tag, "onPlayerError $errorMessage")
-    playerNotificationService.handlePlayerPlaybackError(errorMessage, error.errorCode)
+    val causes = mutableListOf<String>()
+    var cause = error.cause
+    var depth = 0
+    while (cause != null && depth < 6) {
+      causes += "${cause.javaClass.simpleName}: ${cause.message}"
+      cause = cause.cause
+      depth++
+    }
+    val detail = describePlayerError(error.message, error.errorCode, causes)
+    AbsLogger.error(tag, "onPlayerError $detail")
+    playerNotificationService.handlePlayerPlaybackError(detail, error.errorCode)
+  }
+
+  override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+    val label = pauseReasonLabel(reason)
+    AbsLogger.info(tag, "playWhenReady=$playWhenReady reason=$label")
+    Log.i(tag, "playWhenReady=$playWhenReady reason=$label")
   }
 
   override fun onPositionDiscontinuity(
@@ -46,6 +61,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     // Goal of these 2 if statements and the lazyIsPlaying is to ignore this event when it is triggered by a seek
     //  When a seek occurs the player is paused and buffering, then plays again right afterwards.
     if (!isPlaying && player.playbackState == Player.STATE_BUFFERING) {
+      AbsLogger.info(tag, "isPlaying=false ignored because the player is buffering")
       Log.d(tag, "onIsPlayingChanged: Pause event when buffering is ignored")
       return
     }
@@ -55,6 +71,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     }
 
     lazyIsPlaying = isPlaying
+    AbsLogger.info(tag, "isPlaying=$isPlaying playbackState=${player.playbackState}")
 
     // Update widget
     DeviceManager.widgetUpdater?.onPlayerChanged(playerNotificationService)

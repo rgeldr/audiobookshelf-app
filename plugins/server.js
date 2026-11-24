@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client'
 import EventEmitter from 'events'
+import { AbsLogger } from './capacitor/AbsLogger'
 
 class ServerSocket extends EventEmitter {
   constructor(store) {
@@ -76,6 +77,7 @@ class ServerSocket extends EventEmitter {
 
   onConnect() {
     console.log('[SOCKET] Socket Connected ' + this.socket.id)
+    AbsLogger.info({ tag: 'socket', message: `connected id=${this.socket.id}` })
     this.connected = true
     this.$store.commit('setSocketConnected', true)
     this.emit('connection-update', true)
@@ -98,6 +100,7 @@ class ServerSocket extends EventEmitter {
 
   onDisconnect(reason) {
     console.log('[SOCKET] Socket Disconnected: ' + reason)
+    AbsLogger.info({ tag: 'socket', message: `disconnected reason=${reason}; playback is not closed` })
     this.connected = false
     this.$store.commit('setSocketConnected', false)
     this.emit('connection-update', false)
@@ -110,7 +113,9 @@ class ServerSocket extends EventEmitter {
   }
 
   onAuthFailed(data) {
-    console.log('[SOCKET] Auth failed: ' + (data?.message || 'Unknown reason'))
+    const message = data?.message || 'Unknown reason'
+    console.log('[SOCKET] Auth failed: ' + message)
+    AbsLogger.error({ tag: 'socket', message: `auth failed: ${message}` })
     this.isAuthenticated = false
   }
 
