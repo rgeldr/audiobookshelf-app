@@ -20,6 +20,8 @@ class PlaybackQueue {
     entries.clear()
   }
 
+  fun snapshot(): List<PlaybackQueueEntry> = entries.toList()
+
   fun peek(): PlaybackQueueEntry? = entries.firstOrNull()
 
   fun poll(): PlaybackQueueEntry? = if (entries.isEmpty()) null else entries.removeFirst()

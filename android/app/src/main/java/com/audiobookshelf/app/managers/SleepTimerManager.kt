@@ -69,11 +69,6 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
     playerNotificationService.currentPlayer.volume = volume
   }
 
-  /** Pauses the player. */
-  private fun pause() {
-    playerNotificationService.currentPlayer.pause()
-  }
-
   /** Plays the player. */
   private fun play() {
     playerNotificationService.currentPlayer.play()
@@ -167,7 +162,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
 
                   if (sleepTimeSecondsRemaining <= 0) {
                     Log.d(tag, "Sleep Timer Pausing Player on Chapter")
-                    pause()
+                    playerNotificationService.closePlayback()
 
                     playerNotificationService.clientEventEmitter?.onSleepTimerEnded(
                             getCurrentTime()

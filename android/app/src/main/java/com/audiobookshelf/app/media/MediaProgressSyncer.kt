@@ -246,6 +246,10 @@ class MediaProgressSyncer(
       return cb(null)
     }
 
+    if (currentPlaybackSession != null) {
+      playerNotificationService.rememberResumeBookmark()
+    }
+
     val hasNetworkConnection = DeviceManager.checkConnectivity(playerNotificationService)
 
     // Save playback session to db (server linked sessions only)

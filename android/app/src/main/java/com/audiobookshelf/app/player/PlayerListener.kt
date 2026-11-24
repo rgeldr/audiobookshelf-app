@@ -20,7 +20,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
   override fun onPlayerError(error: PlaybackException) {
     val errorMessage = error.message ?: "Unknown Error"
     Log.e(tag, "onPlayerError $errorMessage")
-    playerNotificationService.handlePlayerPlaybackError(errorMessage) // If was direct playing session, fallback to transcode
+    playerNotificationService.handlePlayerPlaybackError(errorMessage, error.errorCode)
   }
 
   override fun onPositionDiscontinuity(
@@ -92,6 +92,10 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     } else {
       Log.d(tag, "SeekBackTime: Player not playing set last pause time | playbackState=${player.playbackState}")
       lastPauseTime = System.currentTimeMillis()
+      if (player.playbackState == Player.STATE_READY) {
+        playerNotificationService.rememberResumeBookmark()
+        playerNotificationService.demotePausedForeground()
+      }
     }
 
     // Start/stop progress sync interval

@@ -71,6 +71,17 @@ class PlaybackQueueTest {
   }
 
   @Test
+  fun snapshotIsACopy() {
+    val queue = PlaybackQueue()
+    queue.replace(listOf(entry("a"), entry("b", "ep")))
+    val copy = queue.snapshot()
+    queue.poll()
+    assertEquals(2, copy.size)
+    assertEquals("a", copy[0].libraryItemId)
+    assertEquals("ep", copy[1].episodeId)
+  }
+
+  @Test
   fun androidJsonNullEpisodeIdIsNotAnEpisode() {
     // Android JSONObject.optString returns the string "null" for a JSON null.
     assertNull(queueEpisodeId("null"))
