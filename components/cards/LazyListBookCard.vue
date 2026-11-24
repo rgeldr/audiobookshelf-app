@@ -358,6 +358,10 @@ export default {
         if (this.seriesId && this.libraryItem && this.libraryItem.libraryId) {
           playPayload.seriesId = this.seriesId
           playPayload.seriesLibraryId = this.libraryItem.libraryId
+        } else if (this.libraryItem) {
+          playPayload.mediaType = this.libraryItem.mediaType
+          playPayload.libraryId = this.libraryItem.libraryId
+          playPayload.series = this.libraryItem.media?.metadata?.series
         }
         this.store.commit('setPlayerIsStartingPlayback', this.libraryItemId)
         eventBus.$emit('play-item', playPayload)
