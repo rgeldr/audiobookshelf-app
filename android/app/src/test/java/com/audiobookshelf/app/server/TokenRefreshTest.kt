@@ -81,4 +81,37 @@ class TokenRefreshTest {
     assertEquals(TrackAuthAction.RetryWithNewToken, trackActionAfterUnauthorized(refreshSucceeded = true))
     assertEquals(TrackAuthAction.KeepBufferedPlayback, trackActionAfterUnauthorized(refreshSucceeded = false))
   }
+
+  @Test
+  fun unpauseWhileTokenExpiredDoesNotBlockAndSavesTheToken() {
+    val plan = planUnpause(hasLoadedMedia = true, accessTokenExpired = true)
+    assertTrue(plan.resumeImmediately)
+    assertTrue(plan.refreshInBackground)
+    assertFalse(plan.blocksCaller)
+
+    val flight = RefreshCompletion()
+    val first = flight.start()
+    flight.httpResult(200, "access-new", "refresh-new", "srv", "Home")
+    assertTrue(flight.callerReleased)
+    assertEquals(RefreshOutcome.Success, flight.outcome)
+    assertEquals("access-new", flight.saved?.accessToken)
+    assertEquals("Home", flight.saved?.serverName)
+    assertFalse(flight.deadlineFor(first))
+    assertEquals(RefreshOutcome.Success, flight.outcome)
+
+    val second = flight.start()
+    assertFalse(flight.deadlineFor(first))
+    assertEquals(RefreshOutcome.Success, flight.outcome)
+    flight.httpResult(200, "access-2", "refresh-2", "srv", null)
+    assertEquals(second, flight.generation)
+    assertEquals("srv", flight.saved?.serverName)
+    assertEquals("access-2", flight.saved?.accessToken)
+  }
+
+  @Test
+  fun refreshWaitStaysOffTheMainAndPlayerThreads() {
+    assertFalse(mayWaitForRefresh(threadName = "main", isMainThread = true))
+    assertFalse(mayWaitForRefresh(threadName = "ExoPlayer:Playback", isMainThread = false))
+    assertTrue(mayWaitForRefresh(threadName = "ExoPlayer:Loader", isMainThread = false))
+  }
 }
