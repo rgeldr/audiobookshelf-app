@@ -35,7 +35,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
 
   override fun onPlay() {
     Log.d(tag, "ON PLAY MEDIA SESSION COMPAT")
-    playerNotificationService.play()
+    playerNotificationService.handleTransport(TransportButton.Play)
   }
 
   override fun onPrepareFromSearch(query: String?, extras: Bundle?) {
@@ -61,11 +61,11 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
 
   override fun onPause() {
     Log.d(tag, "ON PAUSE MEDIA SESSION COMPAT")
-    playerNotificationService.pause()
+    playerNotificationService.handleTransport(TransportButton.Pause)
   }
 
   override fun onStop() {
-    playerNotificationService.pause()
+    playerNotificationService.handleTransport(TransportButton.Stop)
   }
 
   override fun onSkipToPrevious() {
@@ -181,15 +181,10 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
 //              }
 //            }
 
-            if (playerNotificationService.mPlayer.isPlaying) {
-              if (0 == mediaButtonClickCount) playerNotificationService.pause()
-              handleMediaButtonClickCount()
-            } else {
-              if (0 == mediaButtonClickCount) {
-                playerNotificationService.play()
-              }
-              handleMediaButtonClickCount()
+            if (0 == mediaButtonClickCount) {
+              playerNotificationService.handleTransport(TransportButton.PlayPause)
             }
+            handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
             Log.d(tag, "handleCallMediaButton: Media Fast Forward")
@@ -208,23 +203,22 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
           KeyEvent.KEYCODE_HEADSETHOOK -> {
             Log.d(tag, "handleCallMediaButton: Headset Hook")
             if (0 == mediaButtonClickCount) {
-              if (playerNotificationService.mPlayer.isPlaying)
-                playerNotificationService.pause()
-              else
-                playerNotificationService.play()
+              playerNotificationService.handleTransport(TransportButton.PlayPause)
             }
             handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_PLAY -> {
             Log.d(tag, "handleCallMediaButton: Media Play")
             if (0 == mediaButtonClickCount) {
-              playerNotificationService.play()
+              playerNotificationService.handleTransport(TransportButton.Play)
             }
             handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_PAUSE -> {
             Log.d(tag, "handleCallMediaButton: Media Pause")
-            if (0 == mediaButtonClickCount) playerNotificationService.pause()
+            if (0 == mediaButtonClickCount) {
+              playerNotificationService.handleTransport(TransportButton.Pause)
+            }
             handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_NEXT -> {
@@ -234,7 +228,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
             playerNotificationService.jumpBackward()
           }
           KeyEvent.KEYCODE_MEDIA_STOP -> {
-            playerNotificationService.pause()
+            playerNotificationService.handleTransport(TransportButton.Stop)
           }
           else -> {
             Log.d(tag, "KeyCode:${keyEvent.keyCode}")

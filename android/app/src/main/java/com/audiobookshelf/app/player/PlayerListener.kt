@@ -92,6 +92,10 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     } else {
       Log.d(tag, "SeekBackTime: Player not playing set last pause time | playbackState=${player.playbackState}")
       lastPauseTime = System.currentTimeMillis()
+      if (player.playbackState == Player.STATE_READY) {
+        playerNotificationService.rememberResumeBookmark()
+        playerNotificationService.demotePausedForeground()
+      }
     }
 
     // Start/stop progress sync interval

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.models.DownloadItem
+import com.audiobookshelf.app.player.ResumeBookmark
 import com.audiobookshelf.app.plugins.AbsLog
 import com.audiobookshelf.app.plugins.AbsLogger
 import io.paperdb.Paper
@@ -357,6 +358,18 @@ class DbManager {
 
   fun savePlaybackSession(playbackSession: PlaybackSession) {
     Paper.book("playbackSession").write(playbackSession.id, playbackSession)
+  }
+
+  fun saveResumeBookmark(bookmark: ResumeBookmark) {
+    Paper.book("resumeBookmark").write("current", bookmark)
+  }
+
+  fun getResumeBookmark(): ResumeBookmark? {
+    return Paper.book("resumeBookmark").read("current")
+  }
+
+  fun clearResumeBookmark() {
+    Paper.book("resumeBookmark").delete("current")
   }
   fun removePlaybackSession(playbackSessionId: String) {
     Paper.book("playbackSession").delete(playbackSessionId)

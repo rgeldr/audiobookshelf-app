@@ -40,7 +40,7 @@ class PlayerNotificationListener(var playerNotificationService:PlayerNotificatio
   ) {
     if (dismissedByUser) {
       Log.d(tag, "onNotificationCancelled dismissed by user")
-      playerNotificationService.stopSelf()
+      playerNotificationService.closePlayback()
     } else {
       Log.d(tag, "onNotificationCancelled not dismissed by user")
 

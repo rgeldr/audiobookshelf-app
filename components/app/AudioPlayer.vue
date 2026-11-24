@@ -1010,11 +1010,6 @@ export default {
     }
     window.removeEventListener('resize', this.screenOrientationChange)
 
-    if (this.playbackSession) {
-      console.log('[AudioPlayer] Before destroy closing playback')
-      this.closePlayback()
-    }
-
     this.forceCloseDropdownMenu()
     this.$eventBus.$off('minimize-player', this.minimizePlayerEvt)
     document.body.removeEventListener('touchstart', this.touchstart)

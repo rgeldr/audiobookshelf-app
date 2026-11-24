@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.view.KeyEvent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.ImageDecoder
@@ -127,6 +129,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   private var isAndroidAuto = false
   val playbackQueue = PlaybackQueue()
   var autoAdvanceGeneration: Int = 0
+  private var resumeInFlight = false
+  private var warmCheckInFlight = false
+  private var suppressResumeBookmark = false
+  private var closingPlayback = false
 
   // The following are used for the shake detection
   private var isShakeSensorRegistered: Boolean = false
@@ -169,6 +175,20 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     isStarted = true
     Log.d(tag, "onStartCommand $startId")
+    if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
+      val keyEvent =
+              if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+              } else {
+                @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+              }
+      if (keyEvent?.action == KeyEvent.ACTION_UP) {
+        val button = transportButton(keyEvent.keyCode)
+        if (button != TransportButton.Other) {
+          deliverMediaButton(button)
+        }
+      }
+    }
 
     return START_STICKY
   }
@@ -427,6 +447,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           playWhenReady: Boolean,
           playbackRate: Float?
   ) {
+    suppressResumeBookmark = false
     if (!isStarted) {
       Log.i(tag, "preparePlayer: foreground service not started - Starting service --")
       Intent(ctx, PlayerNotificationService::class.java).also { intent ->
@@ -1045,6 +1066,214 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     return false
   }
 
+  fun rememberResumeBookmark() {
+    if (suppressResumeBookmark) return
+    val session = currentPlaybackSession ?: return
+    val bookmark =
+            resumeBookmarkFrom(
+                    isLocal = session.isLocal,
+                    sessionLibraryItemId = session.libraryItemId,
+                    sessionEpisodeId = session.episodeId,
+                    localLibraryItemId = session.localLibraryItem?.id,
+                    localEpisodeId = session.localEpisodeId,
+                    positionSeconds = getCurrentTimeSeconds(),
+                    savedAt = System.currentTimeMillis(),
+                    serverConnectionConfigId = session.serverConnectionConfigId,
+                    queue = playbackQueue.snapshot()
+            )
+                    ?: return
+    DeviceManager.dbManager.saveResumeBookmark(bookmark)
+  }
+
+  fun demotePausedForeground() {
+    if (PlayerNotificationListener.isForegroundService) {
+      stopForeground(Service.STOP_FOREGROUND_DETACH)
+      PlayerNotificationListener.isForegroundService = false
+    }
+    mediaSession.isActive = true
+  }
+
+  private fun deliverMediaButton(button: TransportButton) {
+    val player = loadedPlayer()
+    val bookmark = DeviceManager.dbManager.getResumeBookmark()
+    val action = resumeAction(button, player, bookmark != null)
+    when (mediaButtonDelivery(action, PlayerNotificationListener.isForegroundService, player)) {
+      MediaButtonDelivery.Dispatch -> handleTransport(button)
+      MediaButtonDelivery.KeepPausedNotification -> {
+        startForegroundForResume()
+        playerNotificationManager.invalidate()
+        demotePausedForeground()
+      }
+      MediaButtonDelivery.StopEmptyService -> {
+        startForegroundForResume()
+        stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        PlayerNotificationListener.isForegroundService = false
+        stopSelf()
+      }
+    }
+  }
+
+  fun handleTransport(button: TransportButton) {
+    val bookmark = DeviceManager.dbManager.getResumeBookmark()
+    val action = resumeAction(button, loadedPlayer(), bookmark != null)
+    if (action == ResumeAction.ResumeFromBookmark && resumeInFlight) return
+    if (mustForegroundImmediately(action) && !PlayerNotificationListener.isForegroundService) {
+      startForegroundForResume()
+    }
+    when (action) {
+      ResumeAction.PlayLoaded -> resumeLoaded(bookmark)
+      ResumeAction.PauseAndKeep -> pause()
+      ResumeAction.ResumeFromBookmark -> if (bookmark != null) resumeFromBookmark(bookmark)
+      ResumeAction.StopAndClear -> closePlayback()
+      ResumeAction.Ignore -> {}
+    }
+  }
+
+  private fun loadedPlayer(): LoadedPlayer {
+    if (currentPlaybackSession == null || !::currentPlayer.isInitialized) return LoadedPlayer.Empty
+    if (currentPlayer.playbackState == Player.STATE_IDLE) return LoadedPlayer.Empty
+    return if (currentPlayer.isPlaying) LoadedPlayer.Playing else LoadedPlayer.Paused
+  }
+
+  private fun startForegroundForResume() {
+    val notification =
+            NotificationCompat.Builder(this, channelId)
+                    .setSmallIcon(R.drawable.icon_monochrome)
+                    .setContentTitle("Audiobookshelf")
+                    .setOngoing(true)
+                    .build()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+    } else {
+      startForeground(notificationId, notification)
+    }
+    PlayerNotificationListener.isForegroundService = true
+    mediaSession.isActive = true
+  }
+
+  private fun downloadedItems(): List<DownloadedItem> {
+    return DeviceManager.dbManager.getLocalLibraryItems().map { item ->
+      val episodes =
+              (item.media as? Podcast)?.episodes?.map { episode ->
+                DownloadedEpisode(episode.id, episode.serverEpisodeId)
+              }
+                      ?: emptyList()
+      DownloadedItem(item.id, item.libraryItemId, episodes)
+    }
+  }
+
+  private fun episodeFrom(local: LocalLibraryItem?, episodeId: String?): PodcastEpisode? {
+    if (local == null || episodeId == null) return null
+    return (local.media as? Podcast)?.episodes?.find { it.id == episodeId }
+  }
+
+  private fun resumeLoaded(bookmark: ResumeBookmark?) {
+    if (bookmark != null) {
+      val choice = chooseResume(bookmark, downloadedItems(), loadedPlayer())
+      if (choice.source == ResumeSource.LocalFile && !alreadyPlayingLocal(choice)) {
+        playLocalChoice(bookmark, choice)
+        return
+      }
+    }
+    val session = currentPlaybackSession
+    if (session == null || session.isLocal || !DeviceManager.checkConnectivity(ctx)) {
+      play()
+      return
+    }
+    if (warmCheckInFlight) return
+    warmCheckInFlight = true
+    apiHandler.getPlaybackSession(session.id) { found ->
+      Handler(Looper.getMainLooper()).post {
+        warmCheckInFlight = false
+        if (!warmResumeNeedsNewServerSession(session.isLocal, found != null)) {
+          play()
+        } else if (bookmark != null) {
+          resumeFromBookmark(bookmark)
+        } else {
+          startNewPlaybackSession()
+        }
+      }
+    }
+  }
+
+  private fun alreadyPlayingLocal(choice: ResumeChoice): Boolean {
+    val session = currentPlaybackSession ?: return false
+    return session.isLocal &&
+            session.localLibraryItem?.id == choice.localLibraryItemId &&
+            session.localEpisodeId == choice.localEpisodeId
+  }
+
+  private fun playLocalChoice(bookmark: ResumeBookmark, choice: ResumeChoice) {
+    if (resumeInFlight) return
+    resumeInFlight = true
+    val localId = choice.localLibraryItemId
+    val local = if (localId == null) null else DeviceManager.dbManager.getLocalLibraryItem(localId)
+    val episode = episodeFrom(local, choice.localEpisodeId)
+    if (local == null || (choice.localEpisodeId != null && episode == null)) {
+      Log.i(tag, "resume bookmark missing local item $localId")
+      abandonResumeNotification()
+      resumeInFlight = false
+      return
+    }
+    val session = local.getPlaybackSession(episode, getDeviceInfo())
+    session.currentTime = positionToResume(bookmark, session.currentTime, session.updatedAt)
+    playbackQueue.replace(choice.queue)
+    PlayerListener.lazyIsPlaying = false
+    preparePlayer(session, true, mediaManager.getSavedPlaybackRate())
+    resumeInFlight = false
+  }
+
+  fun resumeFromBookmark(bookmark: ResumeBookmark) {
+    if (resumeInFlight) return
+    val choice = chooseResume(bookmark, downloadedItems(), LoadedPlayer.Empty)
+    when (choice.source) {
+      ResumeSource.AlreadyLoaded -> {}
+      ResumeSource.Unavailable -> {
+        Log.i(tag, "resume bookmark has no file and no server item")
+        abandonResumeNotification()
+      }
+      ResumeSource.LocalFile -> playLocalChoice(bookmark, choice)
+      ResumeSource.NewServerSession -> openServerSession(bookmark, choice)
+    }
+  }
+
+  private fun openServerSession(bookmark: ResumeBookmark, choice: ResumeChoice) {
+    if (resumeInFlight) return
+    resumeInFlight = true
+    val serverId = choice.serverLibraryItemId
+    if (serverId == null || !DeviceManager.checkConnectivity(ctx)) {
+      Log.i(tag, "resume bookmark offline for $serverId")
+      abandonResumeNotification()
+      resumeInFlight = false
+      return
+    }
+    val rate = mediaManager.getSavedPlaybackRate()
+    apiHandler.playLibraryItem(serverId, choice.serverEpisodeId, getPlayItemRequestPayload(false)) { session ->
+      if (session == null) {
+        Handler(Looper.getMainLooper()).post {
+          Log.i(tag, "resume bookmark server play failed $serverId")
+          abandonResumeNotification()
+          resumeInFlight = false
+        }
+        return@playLibraryItem
+      }
+      apiHandler.getMediaProgress(serverId, choice.serverEpisodeId, DeviceManager.serverConnectionConfig) { progress ->
+        Handler(Looper.getMainLooper()).post {
+          session.currentTime = positionToResume(bookmark, progress?.currentTime, progress?.lastUpdate)
+          playbackQueue.replace(choice.queue)
+          PlayerListener.lazyIsPlaying = false
+          preparePlayer(session, true, rate)
+          resumeInFlight = false
+        }
+      }
+    }
+  }
+
+  private fun abandonResumeNotification() {
+    stopForeground(Service.STOP_FOREGROUND_REMOVE)
+    PlayerNotificationListener.isForegroundService = false
+  }
+
   fun play() {
     if (currentPlayer.isPlaying) {
       Log.d(tag, "Already playing")
@@ -1123,9 +1352,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   fun closePlayback(calledOnError: Boolean? = false) {
+    if (closingPlayback) return
+    closingPlayback = true
     Log.d(tag, "closePlayback")
+    suppressResumeBookmark = true
     autoAdvanceGeneration += 1
     playbackQueue.clear()
+    DeviceManager.dbManager.clearResumeBookmark()
     val config = DeviceManager.serverConnectionConfig
 
     val isLocal = mediaProgressSyncer.currentIsLocal
@@ -1169,6 +1402,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     DeviceManager.widgetUpdater?.onPlayerClosed()
     stopForeground(Service.STOP_FOREGROUND_REMOVE)
     stopSelf()
+    closingPlayback = false
   }
 
   fun sendClientMetadata(playerState: PlayerState) {

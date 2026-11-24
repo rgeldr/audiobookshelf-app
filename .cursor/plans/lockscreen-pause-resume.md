@@ -28,7 +28,7 @@ These are locked for implementation. Open questions at the bottom are the ones n
 2. The sleep timer firing, swiping the notification away, and the in-app Close action call today's `closePlayback`: notification removed, server session closed, bookmark deleted, queue cleared. A later headset play does not resume.
 3. `AudioPlayer.vue` `beforeDestroy` must not call `closePlayback`. The native service owns the session when the WebView is torn down.
 4. Headset `KEYCODE_MEDIA_STOP` stays a pause, matching `MediaSessionCallback` today. It does not clear the bookmark.
-5. A remote item with no network cannot resume after the process is dead. Keep the bookmark and do not guess a downloaded copy. A local item plays from disk with no network.
+5. When resuming from the bookmark, a book or podcast episode that is downloaded plays from that local file at the saved position. The queue is restored unchanged. Stream only when no local copy of that item or episode exists. A remote item with no network and no download cannot resume; keep the bookmark.
 6. On a warm resume (player still has media), try `play()` first. If the item is remote, the network is up, and `GET /api/session/:id` returns nothing, open a new session with the existing `startNewPlaybackSession` / `playLibraryItem` path. Do not uncomment the 30-second block in `PlayerListener`.
 7. When the server progress `updatedAt` is newer than the bookmark, use the server position. Otherwise use the bookmark. Rewinding on another device must win.
 8. Do not add a battery-optimization prompt, a settings toggle, or a Media3 `MediaSessionService`.
@@ -131,13 +131,17 @@ The sleep timer does not stop the service. At zero it calls `pause()` (`SleepTim
   - `enum class TransportButton { Play, Pause, PlayPause, Stop, Other }`
   - `enum class LoadedPlayer { Empty, Paused, Playing }`
   - `enum class ResumeAction { PlayLoaded, PauseAndKeep, ResumeFromBookmark, StopAndClear, Ignore }`
-  - `enum class ResumeSource { AlreadyLoaded, LocalFile, NewServerSession }`
-  - `data class ResumeBookmark(val libraryItemId: String, val episodeId: String?, val local: Boolean, val positionSeconds: Double, val savedAt: Long, val serverConnectionConfigId: String?, val queue: List<PlaybackQueueEntry>)`
+  - `enum class ResumeSource { AlreadyLoaded, LocalFile, NewServerSession, Unavailable }`
+  - `data class DownloadedEpisode(val localEpisodeId: String, val serverEpisodeId: String?)`
+  - `data class DownloadedItem(val localLibraryItemId: String, val serverLibraryItemId: String?, val episodes: List<DownloadedEpisode>)`
+  - `data class ResumeChoice(val source: ResumeSource, val localLibraryItemId: String?, val localEpisodeId: String?, val serverLibraryItemId: String?, val serverEpisodeId: String?, val queue: List<PlaybackQueueEntry>)`
+  - `data class ResumeBookmark(val libraryItemId: String, val episodeId: String?, val local: Boolean, val positionSeconds: Double, val savedAt: Long, val serverConnectionConfigId: String?, val queue: List<PlaybackQueueEntry>, val serverLibraryItemId: String?, val serverEpisodeId: String?)`
   - `fun foregroundChangeFor(reason: PauseStopReason): ForegroundChange`
   - `fun resumeAction(button: TransportButton, player: LoadedPlayer, hasBookmark: Boolean): ResumeAction`
   - `fun foregroundChangeFor(action: ResumeAction): ForegroundChange`
   - `fun mustForegroundImmediately(action: ResumeAction): Boolean`
-  - `fun resumeSource(player: LoadedPlayer, local: Boolean): ResumeSource`
+  - `fun resumeBookmarkFrom(isLocal: Boolean, sessionLibraryItemId: String?, sessionEpisodeId: String?, localLibraryItemId: String?, localEpisodeId: String?, positionSeconds: Double, savedAt: Long, serverConnectionConfigId: String?, queue: List<PlaybackQueueEntry>): ResumeBookmark?`
+  - `fun chooseResume(bookmark: ResumeBookmark, downloads: List<DownloadedItem>, player: LoadedPlayer): ResumeChoice`
   - `fun warmResumeNeedsNewServerSession(local: Boolean, serverSessionFound: Boolean): Boolean`
   - `fun positionToResume(bookmark: ResumeBookmark, otherPositionSeconds: Double?, otherUpdatedAt: Long?): Double`
   - `fun transportButton(keyCode: Int): TransportButton`
@@ -153,6 +157,7 @@ package com.audiobookshelf.app.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -165,7 +170,9 @@ class PauseResumeTest {
                   positionSeconds = position,
                   savedAt = savedAt,
                   serverConnectionConfigId = "srv",
-                  queue = listOf(PlaybackQueueEntry("lib-2", null))
+                  queue = listOf(PlaybackQueueEntry("lib-2", null)),
+                  serverLibraryItemId = "lib-1",
+                  serverEpisodeId = null
           )
 
   @Test
@@ -239,10 +246,79 @@ class PauseResumeTest {
   }
 
   @Test
-  fun emptyLocalItemUsesDiskAndEmptyRemoteItemOpensANewServerSession() {
-    assertEquals(ResumeSource.LocalFile, resumeSource(LoadedPlayer.Empty, local = true))
-    assertEquals(ResumeSource.NewServerSession, resumeSource(LoadedPlayer.Empty, local = false))
-    assertEquals(ResumeSource.AlreadyLoaded, resumeSource(LoadedPlayer.Paused, local = false))
+  fun downloadedBookPlaysLocallyAndKeepsTheQueue() {
+    val saved = bookmark(savedAt = 100L, position = 50.0)
+    val downloads = listOf(DownloadedItem("local-1", "lib-1", emptyList()))
+    val choice = chooseResume(saved, downloads, LoadedPlayer.Empty)
+    assertEquals(ResumeSource.LocalFile, choice.source)
+    assertEquals("local-1", choice.localLibraryItemId)
+    assertNull(choice.localEpisodeId)
+    assertEquals(saved.queue, choice.queue)
+  }
+
+  @Test
+  fun missingDownloadStreamsTheServerItem() {
+    val saved = bookmark(savedAt = 100L, position = 50.0)
+    val choice = chooseResume(saved, emptyList(), LoadedPlayer.Empty)
+    assertEquals(ResumeSource.NewServerSession, choice.source)
+    assertEquals("lib-1", choice.serverLibraryItemId)
+    assertEquals(saved.queue, choice.queue)
+  }
+
+  @Test
+  fun downloadedEpisodePlaysThatLocalFile() {
+    val saved = bookmark(savedAt = 100L, position = 12.0).copy(episodeId = "ep-9", serverEpisodeId = "ep-9")
+    val downloads = listOf(
+            DownloadedItem(
+                    "local-pod",
+                    "lib-1",
+                    listOf(DownloadedEpisode("local-ep-9", "ep-9"), DownloadedEpisode("local-ep-8", "ep-8"))
+            )
+    )
+    val choice = chooseResume(saved, downloads, LoadedPlayer.Empty)
+    assertEquals(ResumeSource.LocalFile, choice.source)
+    assertEquals("local-pod", choice.localLibraryItemId)
+    assertEquals("local-ep-9", choice.localEpisodeId)
+    assertEquals(saved.queue, choice.queue)
+  }
+
+  @Test
+  fun podcastDownloadWithoutThatEpisodeStillStreams() {
+    val saved = bookmark(savedAt = 100L, position = 12.0).copy(episodeId = "ep-9", serverEpisodeId = "ep-9")
+    val downloads = listOf(
+            DownloadedItem("local-pod", "lib-1", listOf(DownloadedEpisode("local-ep-8", "ep-8")))
+    )
+    val choice = chooseResume(saved, downloads, LoadedPlayer.Empty)
+    assertEquals(ResumeSource.NewServerSession, choice.source)
+    assertEquals("ep-9", choice.serverEpisodeId)
+  }
+
+  @Test
+  fun pausedStreamSwitchesToTheDownload() {
+    val saved = bookmark(savedAt = 100L, position = 50.0)
+    val downloads = listOf(DownloadedItem("local-1", "lib-1", emptyList()))
+    val choice = chooseResume(saved, downloads, LoadedPlayer.Paused)
+    assertEquals(ResumeSource.LocalFile, choice.source)
+    assertEquals("local-1", choice.localLibraryItemId)
+  }
+
+  @Test
+  fun pausedStreamWithoutADownloadKeepsTheLoadedPlayer() {
+    val saved = bookmark(savedAt = 100L, position = 50.0)
+    val choice = chooseResume(saved, emptyList(), LoadedPlayer.Paused)
+    assertEquals(ResumeSource.AlreadyLoaded, choice.source)
+  }
+
+  @Test
+  fun localOnlyBookmarkWithNoFileIsUnavailable() {
+    val saved = bookmark(savedAt = 100L, position = 50.0).copy(
+            libraryItemId = "local-1",
+            local = true,
+            serverLibraryItemId = null,
+            serverEpisodeId = null
+    )
+    val choice = chooseResume(saved, emptyList(), LoadedPlayer.Empty)
+    assertEquals(ResumeSource.Unavailable, choice.source)
   }
 
   @Test
@@ -290,7 +366,8 @@ Create `PauseResume.kt` with exactly the functions the tests call. Behavior:
 - `resumeAction`: `Stop` and `Pause` while `Playing` → `PauseAndKeep`. `Pause` otherwise → `Ignore`. `Play` while `Playing` → `Ignore`. `Play` while `Paused` → `PlayLoaded`. `Play` while `Empty` → `ResumeFromBookmark` if `hasBookmark`, else `Ignore`. `PlayPause` while `Playing` → `PauseAndKeep`, while `Paused` → `PlayLoaded`, while `Empty` → same as `Play`. `Other` → `Ignore`.
 - `foregroundChangeFor(action)`: `PlayLoaded` and `ResumeFromBookmark` → `Promote`. `PauseAndKeep` → `DemoteKeepNotification`. `StopAndClear` → `RemoveNotification`. `Ignore` → `None`.
 - `mustForegroundImmediately`: true only for `PlayLoaded` and `ResumeFromBookmark`.
-- `resumeSource`: non-empty player → `AlreadyLoaded`. Empty and local → `LocalFile`. Empty and not local → `NewServerSession`.
+- `resumeBookmarkFrom`: a local session stores the local item id and local episode id, and keeps the server ids when the download is linked. A stream stores the server ids. Returns null when there is no id to resume.
+- `chooseResume`: a matching download (same server item, and the same server episode when the bookmark has one) returns `LocalFile` and the bookmark queue unchanged, including when the loaded player is only paused. No matching download and a loaded player returns `AlreadyLoaded`. No matching download, an empty player, and a server id returns `NewServerSession`. No file and no server id returns `Unavailable`. A podcast download that does not include that episode does not match.
 - `warmResumeNeedsNewServerSession`: true only when `local` is false and `serverSessionFound` is false.
 - `positionToResume`: if either other argument is null, return `bookmark.positionSeconds`. If `otherUpdatedAt > bookmark.savedAt`, return `otherPositionSeconds`. Otherwise return `bookmark.positionSeconds`.
 - `transportButton`: `126` play, `127` pause, `85` and `79` play/pause, `86` stop, else `Other`.
@@ -454,18 +531,18 @@ Add to the service:
 
   fun rememberResumeBookmark() {
     val session = currentPlaybackSession ?: return
-    val libraryItemId = session.libraryItemId ?: return
-    DeviceManager.dbManager.saveResumeBookmark(
-            ResumeBookmark(
-                    libraryItemId = libraryItemId,
-                    episodeId = session.episodeId,
-                    local = session.isLocal,
-                    positionSeconds = getCurrentTimeSeconds(),
-                    savedAt = System.currentTimeMillis(),
-                    serverConnectionConfigId = session.serverConnectionConfigId,
-                    queue = playbackQueue.snapshot()
-            )
-    )
+    val bookmark = resumeBookmarkFrom(
+            isLocal = session.isLocal,
+            sessionLibraryItemId = session.libraryItemId,
+            sessionEpisodeId = session.episodeId,
+            localLibraryItemId = session.localLibraryItem?.id,
+            localEpisodeId = session.localEpisodeId,
+            positionSeconds = getCurrentTimeSeconds(),
+            savedAt = System.currentTimeMillis(),
+            serverConnectionConfigId = session.serverConnectionConfigId,
+            queue = playbackQueue.snapshot()
+    ) ?: return
+    DeviceManager.dbManager.saveResumeBookmark(bookmark)
   }
 
   fun demotePausedForeground() {
@@ -527,6 +604,13 @@ Also call `rememberResumeBookmark()` in `MediaProgressSyncer.sync` immediately a
 
 ```kotlin
   private fun resumeLoaded(bookmark: ResumeBookmark?) {
+    if (bookmark != null) {
+      val choice = chooseResume(bookmark, downloadedItems(), loadedPlayer())
+      if (choice.source == ResumeSource.LocalFile) {
+        playLocalChoice(bookmark, choice)
+        return
+      }
+    }
     val session = currentPlaybackSession
     if (session == null || session.isLocal || !DeviceManager.checkConnectivity(ctx)) {
       play()
@@ -546,56 +630,9 @@ Also call `rememberResumeBookmark()` in `MediaProgressSyncer.sync` immediately a
   }
 ```
 
-`resumeFromBookmark`:
+`downloadedItems()` maps `DbManager.getLocalLibraryItems()` to `DownloadedItem`. A book has an empty episode list. A podcast contributes one `DownloadedEpisode` per episode (`localEpisodeId = episode.id`, `serverEpisodeId = episode.serverEpisodeId`).
 
-```kotlin
-  fun resumeFromBookmark(bookmark: ResumeBookmark) {
-    if (resumeInFlight) return
-    resumeInFlight = true
-    val rate = mediaManager.getSavedPlaybackRate()
-    val done = { resumeInFlight = false }
-    when (resumeSource(LoadedPlayer.Empty, bookmark.local)) {
-      ResumeSource.AlreadyLoaded -> done()
-      ResumeSource.LocalFile -> {
-        val local = DeviceManager.dbManager.getLocalLibraryItem(bookmark.libraryItemId)
-        val episode = episodeFrom(local, bookmark.episodeId)
-        if (local == null || (bookmark.episodeId != null && episode == null)) {
-          Log.i(tag, "resume bookmark missing local item ${bookmark.libraryItemId}")
-          done()
-          return
-        }
-        val session = local.getPlaybackSession(episode, getDeviceInfo())
-        session.currentTime = positionToResume(bookmark, session.currentTime, session.updatedAt)
-        playbackQueue.replace(bookmark.queue)
-        preparePlayer(session, true, rate)
-        done()
-      }
-      ResumeSource.NewServerSession -> {
-        if (!DeviceManager.checkConnectivity(ctx)) {
-          Log.i(tag, "resume bookmark offline for ${bookmark.libraryItemId}")
-          stopForeground(Service.STOP_FOREGROUND_REMOVE)
-          PlayerNotificationListener.isForegroundService = false
-          done()
-          return
-        }
-        apiHandler.playLibraryItem(bookmark.libraryItemId, bookmark.episodeId, getPlayItemRequestPayload(false)) {
-          Handler(Looper.getMainLooper()).post {
-            if (it == null) {
-              Log.i(tag, "resume bookmark server play failed ${bookmark.libraryItemId}")
-              stopForeground(Service.STOP_FOREGROUND_REMOVE)
-              PlayerNotificationListener.isForegroundService = false
-            } else {
-              it.currentTime = positionToResume(bookmark, it.currentTime, it.updatedAt)
-              playbackQueue.replace(bookmark.queue)
-              preparePlayer(it, true, rate)
-            }
-            done()
-          }
-        }
-      }
-    }
-  }
-```
+`resumeFromBookmark` calls `chooseResume(bookmark, downloadedItems(), LoadedPlayer.Empty)`. `LocalFile` uses `choice.localLibraryItemId` and `choice.localEpisodeId` with `episodeFrom`, then `positionToResume` and `playbackQueue.replace(choice.queue)`. `NewServerSession` calls `playLibraryItem(choice.serverLibraryItemId, choice.serverEpisodeId, ...)`. A new server session's `updatedAt` is the session start, so the position comparison uses `getMediaProgress` `lastUpdate` and `currentTime`. `positionToResume` then keeps the bookmark unless that progress is newer. The queue is replaced from `choice.queue`. Offline or a null server response removes the placeholder notification and keeps the bookmark. `Unavailable` does the same. Do not clear the bookmark on failure.
 
 `episodeFrom` matches the lookup in `startQueuedPlayback`:
 
@@ -695,7 +732,7 @@ Manual, screen locked, Pixel Buds Pro 2:
 2. After 1 minute, wake the lock screen. The control should still be there. Buds play resumes the same position (auto-rewind may step back a few seconds; that is existing behavior).
 3. Pause again, lock, wait 10 minutes. Wake. SystemUI may have dropped the live card. `dumpsys media_session` may still show `PAUSED`. Press play on the buds. Playback resumes. This is the bug today.
 4. Pause, lock, leave it 1 hour, then overnight. Buds play resumes the same item. If the process was killed, logcat shows `resume bookmark` / `playLibraryItem` and a new session id, position at the bookmark unless the server progress is newer.
-5. Repeat step 4 on a downloaded item in airplane mode. It plays from disk.
+5. Repeat step 4 on a downloaded item in airplane mode. It plays from disk. Also force-stop while a streamed book that is downloaded is paused, turn on airplane mode, and press play. It plays the local file at the saved position, not the stream.
 6. Repeat step 4 on a remote item in airplane mode after force-stopping the app. Play does not start. Turn the network back on and press play again. It starts. The bookmark was kept.
 7. Start a playlist so the queue has a next item. Pause, force-stop (`adb shell am force-stop com.audiobookshelf.app.debug`), then buds play, then seek to the end. The next queue item starts.
 8. Sleep timer set to 1 minute. When it fires, the notification is gone. Buds play does nothing. The in-app player is closed.
@@ -716,8 +753,10 @@ Force-stop clears the process but not Paper. `adb shell am kill com.audiobookshe
 | WebView / activity destroyed | Vue no longer closes native playback. |
 | Auto-advance queue | Copied into the bookmark on pause and on sync. Restored before `preparePlayer`. |
 | Server session expired | Warm: `getPlaybackSession` null → `resumeFromBookmark` → `playLibraryItem`. Cold: `playLibraryItem` directly. |
-| Offline local item | `LocalFile`. |
-| Offline remote item, process dead | Log, remove the placeholder notification, keep the bookmark. |
+| Downloaded book or episode | Resume plays the local file at the bookmark position, even if the bookmark was a stream. The queue is unchanged. |
+| Same podcast downloaded, that episode not | Stream that episode. |
+| Offline local item, or offline with a download | `LocalFile`. No server session. |
+| Offline remote item, nothing downloaded, process dead | Log, remove the placeholder notification, keep the bookmark. |
 | Battery optimization | Service is not foreground while paused, so Android may kill it. Resume does not depend on the process staying up. |
 | PR #5 retry | Unchanged. A warm `play()` that then errors still uses `handlePlayerPlaybackError`. |
 | Cast | `rememberResumeBookmark` uses `currentPlaybackSession.isLocal` and the current player time. Do not special-case cast. If cast is active, demoting the phone service is unchanged from today's pause. |
@@ -727,4 +766,4 @@ Force-stop clears the process but not Paper. `adb shell am kill com.audiobookshe
 1. Sleep timer today only pauses, and the in-app player stays on screen. This plan closes playback when the timer fires, so the lock screen does not keep a resume control. Confirm that is what you want.
 2. A live paused session's lock-screen card still expires at about 10 minutes. That is Pixel SystemUI, not this app. Hours and days work by restarting from the bookmark when you press play. Confirm that matches what you see in Pocket Casts, rather than a permanent foreground notification.
 3. Swiping the app out of recents hits `onTaskRemoved` → `stopSelf()` and does not clear the bookmark, so a later play resumes. Notification swipe does clear it. Confirm recents swipe should still resume.
-4. A remote item that is also downloaded still resumes as remote. Airplane mode after a kill will not play it until the network is back. Confirm you do not want an automatic switch to the local file.
+4. Decided: if that book or episode is downloaded, resume plays the local file at the saved position and keeps the queue. Stream only when no local copy exists.
