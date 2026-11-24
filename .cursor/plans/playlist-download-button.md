@@ -1,5 +1,7 @@
 # Playlist Download Button Implementation Plan
 
+Status: implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a download button on the playlist detail page that downloads every still-needed playlist item for offline listening, including podcast episodes, through the app's existing `AbsDownloader.downloadLibraryItem` flow.
