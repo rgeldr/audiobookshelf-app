@@ -1,6 +1,6 @@
 # Stream five minutes ahead on Android
 
-Status: not started
+Status: implemented
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@ Status: not started
 
 ## Global Constraints
 
-- Plan only until a later session implements it. Do not start the code in the session that added this file.
+- Implemented on `cursor/streaming-buffer-plan-16c6`. Task 4 (phone drop) is still for Jason. Do not bump the version.
 - Karpathy guidelines (https://github.com/multica-ai/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md): think before coding, simplicity first, surgical changes, goal-driven verification.
 - This repo is Jason's fork `rgeldr/audiobookshelf-app`. Do not open a PR, an issue, or a comment against `advplyr/audiobookshelf-app` or `advplyr/audiobookshelf`.
 - Base the work on `master`. Do not retarget the auto-advance or progress-bar PRs.
@@ -54,6 +54,8 @@ The service builds one `ExoPlayer` in `initializeMPlayer`. It already replaces E
                     )
                     .build()
 ```
+
+This snippet is the buffer the change replaces.
 
 There is no back buffer (`DEFAULT_BACK_BUFFER_DURATION_MS` is 0). Playback can start after 5 seconds buffered. After a stall it waits for 20 seconds before starting again. The builder does not call `setTargetBufferBytes` or `setPrioritizeTimeOverSizeThresholds`, so the audio byte cap stays at `DEFAULT_AUDIO_BUFFER_SIZE` = 200 × 64 KiB = 13,107,200 bytes (12.5 MiB). For a 64–128 kbps audiobook the 45-second time cap is what stops loading. For a high bitrate the byte cap can stop loading first: 12.5 MiB is about 70 seconds of 1,411 kbps PCM.
 
@@ -231,17 +233,17 @@ Risks:
 - `fun shouldContinueLoading(bufferedDurationUs, playbackSpeed, allocatedBytes, targetBufferBytes, minBufferUs, maxBufferUs, prioritizeTime, wasLoading): Boolean`
 - `fun shouldStartPlayback(bufferedDurationUs, playbackSpeed, rebuffering, bufferForPlaybackUs, bufferForPlaybackAfterRebufferUs): Boolean`
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - Direct durations are 300_000, 300_000, 5_000, 15_000, back buffer 30_000, target bytes `16 * 1024 * 1024`, prioritize time false.
   - HLS durations are 20_000, 45_000, 5_000, 20_000, back buffer 0, target bytes 13_107_200, prioritize time false. HLS does not use the 16 MiB ceiling.
   - Using the direct profile at speed 1.0, buffered 10 seconds, byte target not reached: continue loading. Buffered 300 seconds: stop, even if the previous flag was loading. Buffered 299 seconds: still load.
   - Using the direct profile at speed 1.25, the scaled minimum stays 300 seconds (375 seconds capped at the max). Buffered 299 seconds: load. Buffered 300 seconds: stop.
-  - Formula coverage with an explicit 60-second minimum and 180-second maximum, so the copied ExoPlayer rule stays tested even though the direct profile has no gap between min and max. At speed 2.0 the minimum scales to 120 seconds. Buffered 90 seconds, previous flag false: keep not loading. Buffered 30 seconds: load. At speed 1.0, buffered 90 seconds: return `wasLoading` unchanged.
+  - Formula coverage with an explicit 60-second minimum and 180-second maximum, so the copied ExoPlayer rule stays tested even though the direct profile has no gap between min and max. At speed 2.0 the minimum scales to 120 seconds, so 90 seconds of buffer is still under the minimum and must load (30 seconds loads too). 150 seconds is between the scaled minimum and the maximum, so it returns `wasLoading`. At speed 1.0, buffered 90 seconds is between 60 and 180 and returns `wasLoading` unchanged. An earlier draft of this bullet said 90 seconds at speed 2.0 stays not loading. That disagrees with `DefaultLoadControl` 2.18.7 (`bufferedDurationUs < minBufferUs` loads). The tests and the code follow ExoPlayer.
   - Below the minimum, byte target already reached, prioritize time true: still load. Same inputs with prioritize time false: do not load. Direct profile (prioritize time false) at 60 seconds buffered with 16 MiB already allocated: do not load.
   - Start playback at 5 seconds buffered, speed 1, not rebuffering. Do not start at 4 seconds. After rebuffer, 15 seconds is enough and 14 seconds is not. At speed 1.25, 6.25 seconds of media starts playback and 5 seconds does not. After a rebuffer at 1.25, 18.75 seconds of media is enough and 15 seconds is not.
-- [ ] Run `./gradlew :app:testDebugUnitTest --tests com.audiobookshelf.app.player.StreamingBufferTest` and confirm the new tests fail because the production functions do not exist.
-- [ ] Implement the functions. Copy the 2.18.7 inequalities. `Util.getMediaDurationForPlayoutDuration(mediaUs, speed)` is `mediaUs * speed`. Playout duration is `mediaUs / speed`.
-- [ ] Re-run the same test. It passes.
+- [x] Run `./gradlew :app:testDebugUnitTest --tests com.audiobookshelf.app.player.StreamingBufferTest` and confirm the new tests fail because the production functions do not exist.
+- [x] Implement the functions. Copy the 2.18.7 inequalities. `Util.getMediaDurationForPlayoutDuration(mediaUs, speed)` is `mediaUs * speed`. Playout duration is `mediaUs / speed`.
+- [x] Re-run the same test. It passes.
 
 ### Task 2: Retry budget and transcode fallback
 
@@ -254,14 +256,14 @@ Risks:
 - `fun retryDelayMs(errorCount: Int, failure: LoadFailure): Long?` — null means fatal (`C.TIME_UNSET` at the ExoPlayer boundary).
 - `fun shouldFallbackToTranscode(errorCode: Int): Boolean`
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - Network failure delays: count 1 is 0, count 2 is 1_000, count 3 is 2_000, count 4 is 4_000, count 5 is 8_000, count 6 is 16_000, count 7 is 30_000, count 45 is 30_000, count 46 is null.
   - The sum of the non-null delays for counts 1 through 45 is 1_201_000 ms.
   - `Unavailable` uses the same delays. `NotRetryable` is null at count 1.
   - `shouldFallbackToTranscode` is true only for 3001 and 3003. It is false for 2001 (connection failed), 2002 (timeout), 2004 (bad HTTP status), 2005 (file not found), and 3002 / 3004.
-- [ ] Run the test task and confirm these tests fail.
-- [ ] Implement the functions.
-- [ ] Re-run. They pass.
+- [x] Run the test task and confirm these tests fail.
+- [x] Implement the functions.
+- [x] Re-run. They pass.
 
 ### Task 3: Wire the player
 
@@ -269,11 +271,11 @@ Risks:
 
 The wrapper is not a place for new policy. `shouldContinueLoading` reads the active profile's durations and calls `StreamingBuffer.shouldContinueLoading`. `getMinimumLoadableRetryCount` returns `STREAMING_RETRY_COUNT`. `getRetryDelayMsFor` maps the ExoPlayer exception to `LoadFailure` and returns `C.TIME_UNSET` when `retryDelayMs` is null.
 
-- [ ] Add `StreamingLoadControl` and a `LoadErrorHandlingPolicy` in the player package that delegates as above. No new decision that is not already tested.
-- [ ] In `initializeMPlayer`, pass the load control to `ExoPlayer.Builder.setLoadControl`. Set `setMediaSourceFactory` to a `DefaultMediaSourceFactory` that uses the progressive retry policy. Remove the inline `DefaultLoadControl.Builder` block.
-- [ ] In `preparePlayer`, set the profile from `playbackSession.isHLS` before building sources. Call `setLoadErrorHandlingPolicy` on the progressive factories (local and direct). Leave the `HlsMediaSource.Factory` on the default policy.
-- [ ] Change `onPlayerError` and `handlePlayerPlaybackError` to take the error code. Call `shouldFallbackToTranscode`. Only the true branch requests a transcode session. The false branch stays `onPlaybackFailed` + `closePlayback(true)`.
-- [ ] Run `:app:testDebugUnitTest`. The existing `PlaybackQueueTest` and `StreamingBufferTest` pass.
+- [x] Add `StreamingLoadControl` and a `LoadErrorHandlingPolicy` in the player package that delegates as above. No new decision that is not already tested.
+- [x] In `initializeMPlayer`, pass the load control to `ExoPlayer.Builder.setLoadControl`. Set `setMediaSourceFactory` to a `DefaultMediaSourceFactory` that uses the progressive retry policy. Remove the inline `DefaultLoadControl.Builder` block.
+- [x] In `preparePlayer`, set the profile from `playbackSession.isHLS` before building sources. Call `setLoadErrorHandlingPolicy` on the progressive factories (local and direct). Leave the `HlsMediaSource.Factory` on the default policy.
+- [x] Change `onPlayerError` and `handlePlayerPlaybackError` to take the error code. Call `shouldFallbackToTranscode`. Only the true branch requests a transcode session. The false branch stays `onPlaybackFailed` + `closePlayback(true)`.
+- [x] Run `:app:testDebugUnitTest`. The existing `PlaybackQueueTest` and `StreamingBufferTest` pass.
 
 ### Task 4: Manual drop test
 
