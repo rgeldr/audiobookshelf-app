@@ -38,19 +38,6 @@ android {
     targetSdkVersion rootProject.ext.targetSdkVersion
     versionCode 121
     versionName "0.14.2-beta"
-    def gitSha = "unknown"
-    try {
-      def proc = ["git", "-C", rootProject.projectDir.parentFile.absolutePath, "rev-parse", "--short", "HEAD"].execute()
-      proc.waitFor()
-      if (proc.exitValue() == 0) {
-        def sha = proc.text.trim()
-        if (sha) gitSha = sha
-      }
-    } catch (Exception ignored) {}
-    def buildStamp = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    buildStamp.timeZone = java.util.TimeZone.getTimeZone("UTC")
-    buildConfigField "String", "GIT_SHA", "\"${gitSha}\""
-    buildConfigField "String", "BUILD_TIME", "\"${buildStamp.format(new Date())}\""
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
       "appAuthRedirectScheme": "com.audiobookshelf.app"
@@ -59,6 +46,11 @@ android {
       // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
       // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
       ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+  }
+  sourceSets {
+    main {
+      java.srcDir(layout.buildDirectory.dir("generated/source/buildstamp"))
     }
   }
   buildTypes {
@@ -146,3 +138,72 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+
+// BuildConfig fields are static finals, and Kotlin inlines those into AbsLogger.
+// An incremental build then keeps the first SHA and timestamp in that class.
+// This task writes a non-const getter at execution time. It is not UP-TO-DATE
+// and not build-cacheable, so the clock is this build. Git HEAD and refs are
+// inputs so a new commit still invalidates it. The rest of the build stays cached.
+def repoRoot = rootProject.projectDir.parentFile
+def generateBuildStamp = tasks.register("generateBuildStamp") {
+  def gitMeta = new File(repoRoot, ".git")
+  if (gitMeta.isDirectory()) {
+    def head = new File(gitMeta, "HEAD")
+    if (head.isFile()) inputs.file(head).withPathSensitivity(PathSensitivity.NONE)
+    def refs = new File(gitMeta, "refs")
+    if (refs.isDirectory()) inputs.dir(refs).withPathSensitivity(PathSensitivity.RELATIVE)
+  } else if (gitMeta.isFile()) {
+    inputs.file(gitMeta).withPathSensitivity(PathSensitivity.NONE)
+  }
+  def outDir = layout.buildDirectory.dir("generated/source/buildstamp")
+  outputs.dir(outDir)
+  outputs.cacheIf { false }
+  outputs.upToDateWhen { false }
+  doLast {
+    def sha = "unknown"
+    def dirty = false
+    try {
+      def rev = runGit(repoRoot, ["rev-parse", "--short=7", "HEAD"])
+      if (rev.code == 0 && rev.out ==~ /[0-9a-fA-F]+/) sha = rev.out
+      if (sha != "unknown") {
+        def status = runGit(repoRoot, ["status", "--porcelain"])
+        if (status.code == 0 && status.out) dirty = true
+      }
+    } catch (Exception ignored) {
+      sha = "unknown"
+      dirty = false
+    }
+    def epoch = System.currentTimeMillis()
+    def src = """package com.audiobookshelf.app
+
+object BuildStamp {
+  private val rawSha = "${sha}"
+  private val dirty = ${dirty}
+  private val epochMillis = ${epoch}L
+  val GIT_SHA: String
+    get() = formatGitSha(rawSha, dirty)
+  val BUILD_TIME: String
+    get() = formatBuildTime(epochMillis)
+}
+"""
+    def file = new File(outDir.get().asFile, "com/audiobookshelf/app/BuildStamp.kt")
+    file.parentFile.mkdirs()
+    file.setText(src, "UTF-8")
+  }
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+  dependsOn(generateBuildStamp)
+}
+
+def runGit(File repo, List<String> args) {
+  def process = new ProcessBuilder(["git", "-C", repo.absolutePath] + args).start()
+  def stdout = new StringBuilder()
+  def stderr = new StringBuilder()
+  def outThread = Thread.start { stdout.append(process.inputStream.getText("UTF-8")) }
+  def errThread = Thread.start { stderr.append(process.errorStream.getText("UTF-8")) }
+  def code = process.waitFor()
+  outThread.join()
+  errThread.join()
+  return [code: code, out: stdout.toString().trim()]
+}
