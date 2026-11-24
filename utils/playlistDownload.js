@@ -63,6 +63,20 @@ export function playlistDownloadPlan(items, inProgressKeys) {
   return { pending, skippedDownloaded, skippedInProgress, skippedUnusable, fileCount, totalBytes, mediaType }
 }
 
+export function withLocalDownload(items, localLibraryItem) {
+  if (!Array.isArray(items) || !localLibraryItem) return items
+  return items.map((item) => {
+    if (item.libraryItemId !== localLibraryItem.libraryItemId) return item
+    const episodeId = item.episodeId || item.episode?.id || null
+    if (episodeId) {
+      const localEpisode = localLibraryItem.media?.episodes?.find((episode) => episode.serverEpisodeId === episodeId)
+      if (!localEpisode) return item
+      return { ...item, localLibraryItem, localEpisode }
+    }
+    return { ...item, localLibraryItem }
+  })
+}
+
 export function playlistDownloadAction(plan) {
   if (plan.pending.length) return 'confirm'
   if (plan.skippedInProgress > 0) return 'in-progress'

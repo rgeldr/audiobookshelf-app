@@ -5,7 +5,8 @@ import {
   isDownloadablePlaylistItem,
   showPlaylistDownloadButton,
   playlistDownloadPlan,
-  playlistDownloadAction
+  playlistDownloadAction,
+  withLocalDownload
 } from './playlistDownload.js'
 
 function book(id, extra = {}) {
@@ -162,6 +163,33 @@ test('missing and empty rows are unusable and an all-local playlist is already d
   assert.equal(plan.skippedUnusable, 1)
   assert.equal(plan.skippedDownloaded, 1)
   assert.equal(playlistDownloadAction(plan), 'already-downloaded')
+})
+
+test('a finished book download marks only the matching book row', () => {
+  const items = [book('book-1'), book('book-2')]
+  const updated = withLocalDownload(items, { id: 'local_book-1', libraryItemId: 'book-1' })
+  assert.equal(updated[0].localLibraryItem.id, 'local_book-1')
+  assert.equal(updated[1], items[1])
+  assert.deepEqual(playlistDownloadPlan(updated, []).pending.map((row) => row.libraryItemId), ['book-2'])
+})
+
+test('a finished episode download marks that episode and leaves the podcasts other episodes', () => {
+  const items = [episode('pod-1', 'ep-1'), episode('pod-1', 'ep-2')]
+  const updated = withLocalDownload(items, {
+    id: 'local_pod-1',
+    libraryItemId: 'pod-1',
+    media: { episodes: [{ id: 'local_ep-1', serverEpisodeId: 'ep-1' }] }
+  })
+  assert.equal(updated[0].localEpisode.id, 'local_ep-1')
+  assert.equal(updated[0].localLibraryItem.id, 'local_pod-1')
+  assert.equal(updated[1], items[1])
+  assert.deepEqual(playlistDownloadPlan(updated, []).pending.map((row) => row.episodeId), ['ep-2'])
+})
+
+test('a null local item leaves the playlist rows unchanged', () => {
+  const items = [book('book-1')]
+  assert.equal(withLocalDownload(items, null), items)
+  assert.equal(withLocalDownload(null, { libraryItemId: 'book-1' }), null)
 })
 
 test('a null item list yields an empty already-downloaded plan', () => {

@@ -103,7 +103,7 @@ No other files change.
 - Persisting playlists for offline open.
 - Deduping rows. The server rejects a duplicate media item in one playlist.
 - Adding the podcast cover's byte size to the episode total. Native still downloads the cover. The confirm total for episodes is the audio size only.
-- A second download of a finished item whose local row has not been attached to the page yet. That race already exists on the item page. Do not add a refresh step to close it.
+- Refetching the playlist after a download. The page listens for the existing `new-local-library-item` event and attaches that local row with `withLocalDownload`, the same signal the item page uses. The short gap before that event still matches the item page.
 - Version bump. Kotlin tests. iOS native code.
 
 ---

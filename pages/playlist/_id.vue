@@ -39,7 +39,7 @@ import { Dialog } from '@capacitor/dialog'
 import { AbsDownloader } from '@/plugins/capacitor'
 import cellularPermissionHelpers from '@/mixins/cellularPermissionHelpers'
 import { queueAfter } from '@/utils/playbackQueue'
-import { playlistDownloadAction, playlistDownloadPlan, playlistItemKey, showPlaylistDownloadButton } from '@/utils/playlistDownload'
+import { playlistDownloadAction, playlistDownloadPlan, playlistItemKey, showPlaylistDownloadButton, withLocalDownload } from '@/utils/playlistDownload'
 
 export default {
   mixins: [cellularPermissionHelpers],
@@ -231,6 +231,9 @@ export default {
         this.$router.replace('/bookshelf/playlists')
       }
     },
+    newLocalLibraryItem(item) {
+      this.$set(this.playlist, 'items', withLocalDownload(this.playlist.items, item))
+    },
     libraryChanged() {
       // Playlist contents are shown in the context of the selected library, so leave this page
       // when the library changes rather than showing stale items
@@ -320,11 +323,13 @@ export default {
   },
   mounted() {
     this.$eventBus.$on('library-changed', this.libraryChanged)
+    this.$eventBus.$on('new-local-library-item', this.newLocalLibraryItem)
     this.$socket.$on('playlist_updated', this.playlistUpdated)
     this.$socket.$on('playlist_removed', this.playlistRemoved)
   },
   beforeDestroy() {
     this.$eventBus.$off('library-changed', this.libraryChanged)
+    this.$eventBus.$off('new-local-library-item', this.newLocalLibraryItem)
     this.$socket.$off('playlist_updated', this.playlistUpdated)
     this.$socket.$off('playlist_removed', this.playlistRemoved)
   }
