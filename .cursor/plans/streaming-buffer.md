@@ -1,12 +1,12 @@
-# Stream a few minutes ahead on Android
+# Stream five minutes ahead on Android
 
 Status: not started
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** While an Android phone is streaming a book from a self-hosted Audiobookshelf server, keep enough audio buffered that a short connectivity loss (about 30–90 seconds, as in a car) does not stop playback. When the connection returns before the retry window ends, playback continues from the same position.
+**Goal:** While an Android phone is streaming a book from a self-hosted Audiobookshelf server, keep 5 minutes of audio buffered so a connectivity loss does not stop playback. Jason listens at 1.25x, so that cushion is about 4 minutes of clock time. If the buffer does empty, keep waiting about 15 minutes for the connection before the existing failure toast.
 
-**Architecture:** Direct file playback already uses ExoPlayer's progressive source and HTTP range requests. The player is capped at 45 seconds of buffer, and once that buffer drains ExoPlayer treats the load as failed. Raise the direct-play buffer to 3 minutes of media and keep retrying network errors for about 3 minutes so a drained buffer waits instead of ending the session. Leave HLS (server transcode) on today's buffer. The server resets ffmpeg if the client requests a segment more than 10 segments ahead of segments already written.
+**Architecture:** Direct file playback already uses ExoPlayer's progressive source and HTTP range requests. The player is capped at 45 seconds of buffer, and once that buffer drains ExoPlayer treats the load as failed. Raise the direct-play buffer to 5 minutes of media (minimum and maximum both 300 seconds) and keep retrying network errors long enough that a drained buffer waits about 15 minutes instead of ending the session. Leave HLS (server transcode) on today's buffer. The server resets ffmpeg if the client requests a segment more than 10 segments ahead of segments already written.
 
 **Tech Stack:** Kotlin, ExoPlayer 2.18.7 (not Media3), JUnit 4 on `android/app/src/test`. No Nuxt change, no server change.
 
@@ -26,14 +26,16 @@ Status: not started
 
 ## Assumptions
 
-These are the product choices this plan locks in. Do not invent different ones during implementation.
+Jason answered the open questions. These are the product choices this plan locks in. Do not invent different ones during implementation.
 
-1. The buffer target is 3 minutes of **media** time for direct play and direct stream, not a user setting. One minute is too close to a 90-second drop once playback speed is above 1x. A settings row would also touch `DeviceSettings`, `pages/settings.vue`, and the saved device JSON. Leave that out unless Jason asks.
-2. "Ahead" means media time. At 2x, 180 seconds of audio is 90 seconds of clock time. At 3x it is 60 seconds. The retry window below covers a drop that outlasts the buffer.
-3. Jason's driving case is a file the server direct-plays (typical mp3 or m4b/aac) through Caddy. HLS transcode keeps today's 45-second cap. See the HLS section for why a longer HLS buffer is unsafe without a server change.
-4. Local files use the same longer buffer. Reading ahead from disk is cheap, and one profile for "not HLS" avoids a third path.
-5. An outage longer than the retry window still ends playback the way a fatal player error ends it today: the existing toast and `closePlayback`. This plan does not keep a dead session open, and it does not resume by itself after that toast.
-6. Cast playback is unchanged. The Cast player does not use this LoadControl.
+1. The buffer is a fixed 5 minutes of **media** ahead (300 seconds). There is no settings screen and no new `DeviceSettings` field.
+2. Jason's library is a mix of mp3 and m4b, played as direct file streams through Caddy. That path is the one this change lengthens. HLS transcode keeps today's 45-second cap. See the HLS section for why a longer HLS buffer is unsafe without a server change.
+3. He listens at 1.25x. 300 seconds of audio is 300 / 1.25 = 240 seconds of clock time, about 4 minutes. The player still stores 300 seconds of media at that speed, because ExoPlayer caps the speed-scaled minimum at the maximum.
+4. After the buffer is empty, wait about 15 minutes of failed loads before the existing failure toast. The ExoPlayer error count also increments while the buffer is still playing, so the retry budget is sized for a full drain plus those 15 minutes. See the retry section.
+5. HTTP 404 / 410 / 416, parser errors, file-not-found, cleartext, and position-out-of-range stay non-retryable. Transcode fallback stays limited to an unreadable container (`ERROR_CODE_PARSING_CONTAINER_MALFORMED` 3001 and `ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED` 3003).
+6. Local files use the same longer buffer. Reading ahead from disk is cheap, and one profile for "not HLS" avoids a third path.
+7. An outage longer than the retry window still ends playback the way a fatal player error ends it today: the existing toast and `closePlayback`. This plan does not keep a dead session open, and it does not resume by itself after that toast.
+8. Cast playback is unchanged. The Cast player does not use this LoadControl.
 
 ---
 
@@ -123,22 +125,23 @@ Copy (mp3/m4b) is usually faster than realtime, so today's 45-second HLS buffer 
 
 ### Memory
 
-The cap is the buffer duration, not the book. Approximate payload for the direct-play profile (180 seconds ahead + 30 seconds back):
+The cap is the buffer duration, not the book. Jason's files are mp3 and m4b at typical spoken-word bitrates (about 64–128 kbps, occasionally up to a high stereo encode around 320 kbps). Payload for 300 seconds ahead plus the 30-second back buffer:
 
-| Bitrate | 180s ahead | + 30s back |
+| Bitrate | 300s ahead | + 30s back |
 |---|---|---|
-| 64 kbps | 1.4 MB | 1.7 MB |
-| 128 kbps | 2.9 MB | 3.4 MB |
-| 256 kbps | 5.8 MB | 6.7 MB |
-| 320 kbps | 7.2 MB | 8.4 MB |
-| ~900 kbps FLAC | 20 MB | 24 MB |
-| 1,411 kbps PCM | 32 MB | 37 MB |
+| 64 kbps | 2.3 MiB | 2.5 MiB |
+| 128 kbps | 4.6 MiB | 5.0 MiB |
+| 192 kbps | 6.9 MiB | 7.6 MiB |
+| 256 kbps | 9.2 MiB | 10.1 MiB |
+| 320 kbps | 11.4 MiB | 12.6 MiB |
 
-Set the byte ceiling to 48 MiB and prioritize the time thresholds below the minimum buffer, so a 128 kbps book still reaches 180 seconds and a PCM file cannot grow without bound. 48 MiB covers 210 seconds at about 1.5 Mbps. A higher bitrate stops at 48 MiB before 180 seconds. That is acceptable.
+ExoPlayer's default audio ceiling is 12.5 MiB (13,107,200 bytes). That fits 300 seconds of a 128 kbps file and even 300 seconds of a 320 kbps file, but 320 kbps plus the 30-second back buffer is 13.2 MB and would stop a few seconds short of 5 minutes. Set the direct-play ceiling to **16 MiB** (`16 * 1024 * 1024` = 16,777,216 bytes). Every row in the table fits, with about 3.5 MiB of slack for 64 KiB allocator segments. A 128 kbps book still stops on the 300-second time cap, around 5 MiB, not at 16 MiB.
+
+Do not prioritize time over the byte ceiling. With minimum equal to maximum, the "below the minimum" branch is the entire load, and prioritizing time would ignore the 16 MiB cap until 300 seconds were buffered. Leaving the priority off makes 16 MiB a real ceiling for an unexpectedly high bitrate, while normal audiobook bitrates still reach 300 seconds. Do not size the ceiling for FLAC or PCM. Those files are not this library, and a 48 MiB cap is unused memory headroom.
 
 ### Why not a disk cache
 
-ExoPlayer 2.18 has `com.google.android.exoplayer2.upstream.cache.SimpleCache` (the same idea as Media3's `SimpleCache`). It is the wrong tool for a 30–90 second drop. A few megabytes of RAM already holds 3 minutes of speech. A disk cache adds a cache directory, an evictor, a `CacheDataSource` in front of both file and HTTP sources, and cache keys that change every playback session because the URL contains the session id. Use it only if the goal later becomes "keep tens of minutes" or "resume the same stream after the process is killed." Not this change.
+ExoPlayer 2.18 has `com.google.android.exoplayer2.upstream.cache.SimpleCache` (the same idea as Media3's `SimpleCache`). It is the wrong tool here. A few megabytes of RAM already holds 5 minutes of an mp3 or m4b. A disk cache adds a cache directory, an evictor, a `CacheDataSource` in front of both file and HTTP sources, and cache keys that change every playback session because the URL contains the session id. Use it only if the goal later becomes "keep tens of minutes" or "resume the same stream after the process is killed." Not this change.
 
 ---
 
@@ -148,23 +151,28 @@ Two profiles, chosen in `preparePlayer` before `setMediaSource` / `prepare`:
 
 | | Direct play, direct stream, local | HLS transcode |
 |---|---|---|
-| Min buffer | 60s | 20s (unchanged) |
-| Max buffer | 180s | 45s (unchanged) |
+| Min buffer | 300s | 20s (unchanged) |
+| Max buffer | 300s | 45s (unchanged) |
 | Start playback | 5s | 5s |
 | Resume after a stall | 15s | 20s |
 | Back buffer | 30s, retained | 0 |
-| Retry budget | 36 failed loads | ExoPlayer default (3) |
+| Byte ceiling | 16 MiB, time not prioritized | 12.5 MiB audio default |
+| Retry budget | 45 failed loads, backoff capped at 30s | ExoPlayer default (3) |
 
-The minimum buffer is not the start delay. ExoPlayer starts after `bufferForPlayback` (5 seconds), then keeps loading until the max. Loading resumes when the buffered media falls under the minimum. At playback speed above 1x, ExoPlayer scales that minimum by the speed and caps it at the max. Copy that rule. At 2x the direct-play minimum becomes 120 seconds of media, still under the 180-second max.
+Minimum and maximum are both 300 seconds on purpose. ExoPlayer starts playback after `bufferForPlayback` (5 seconds), then loads until the max and does not resume loading until the buffered media falls **under the minimum**. A low minimum, such as 60 seconds under a 300-second max, would let a full buffer drain to 60 seconds before the next fill. The cushion present when the signal drops would be the minimum, not the 5 minutes Jason asked for. ExoPlayer's own defaults use the same number for both. Copy that shape. The 5-second start and the 15-second resume-after-stall stay short so the book still starts quickly and a rebuffer does not wait out the 5 minutes.
 
-The 30-second back buffer covers the in-app jump backward (default 10 seconds) and the pause rewind (up to about 30 seconds) without a new HTTP request during a drop. It is one parameter on the direct-play profile. Do not add a larger one.
+At playback speed above 1x, ExoPlayer scales the minimum by the speed and caps it at the maximum. At 1.25x, 300 × 1.25 = 375 seconds, which the cap pulls back to 300 seconds of media. That is 240 seconds of clock time, about 4 minutes. Copy that rule. Do not shrink the stored buffer to 240 seconds.
+
+The back buffer stays 30 seconds. It is the audio **behind** the playhead, used for the in-app jump backward (default 10 seconds) and the pause rewind (up to about 30 seconds) without a new HTTP request during a drop. Making it longer does not add look-ahead, and the 16 MiB ceiling is what makes the 300-second look-ahead reachable at up to 320 kbps with that 30 seconds included. Do not grow it.
 
 Retry policy, progressive sources only:
 
 - Retry connection failures, timeouts, and HTTP 502 / 503 / 504.
 - Do not retry parser errors, file-not-found, cleartext-not-permitted, HTTP 404 / 410 / 416, or a position-out-of-range error.
-- Delay matches today's curve: `min((errorCount - 1) * 1000, 5000)` ms.
-- `getMinimumLoadableRetryCount` returns 36, and attempt 37 is fatal (`Loader.maybeThrowError` throws when `errorCount > minimum`). At a 5-second cap, 36 fast failures are about 3 minutes of waiting after the buffer is empty. Airplane mode fails the socket immediately, so the backoff dominates. A black-holed route can also sit in the 8-second connect timeout; that only makes the wait longer. Do not change the 8-second timeouts.
+- Backoff, for a retryable failure: attempt 1 waits 0 ms (a blip retries immediately), then 1s, 2s, 4s, 8s, 16s, then 30s for every later attempt. In code: for `errorCount == 1` return 0; otherwise `min(1000L shl (errorCount - 2).coerceAtMost(5), 30_000L)`.
+- `getMinimumLoadableRetryCount` returns 45. `Loader.maybeThrowError` throws when `errorCount > 45`, so the 46th failure is fatal and its delay is null.
+- The sum of the delays for attempts 1 through 45 is 1,201 seconds, about 20.0 minutes. That is longer than 15 minutes because the error count runs during the whole outage, including while buffered audio is still playing. A full 300-second buffer takes 300 seconds to drain at 1x and 240 seconds at 1.25x. After that drain, the remaining delays are 15.0 minutes at 1x and 16.0 minutes at 1.25x. Do not set the count to `15 min / 30s` and ignore the drain. Airplane mode fails the socket immediately, so the backoff is the wait. A black-holed route can also sit in the 8-second connect timeout; that only makes the wait longer. Do not change the 8-second timeouts.
+- Once the network returns, the next retry is at most 30 seconds away.
 - Put the same policy on the `ProgressiveMediaSource.Factory` used for the first track and on the player's `MediaSource.Factory` (`DefaultMediaSourceFactory`) so tracks added with `addMediaItems` get it too. Do not change extractor flags, the user agent, or the HLS auth header.
 
 `LoadControl` is fixed when the player is built, and `initializeMPlayer` runs before the play method is known. Build one load control that holds a mutable profile and one `DefaultAllocator`. Set the profile from `playbackSession.isHLS` at the start of the ExoPlayer branch in `preparePlayer`. Do not rebuild the player to swap controls. Do not instantiate two `DefaultLoadControl`s and delegate: each one owns an allocator, and `shouldContinueLoading` would look at the wrong byte count.
@@ -177,11 +185,11 @@ Copy `DefaultLoadControl.shouldContinueLoading` and `shouldStartPlayback` from E
 - Once buffered duration is at least the max, or the byte target is reached while already above the minimum, stop loading.
 - Between the minimum and the max, leave the previous loading flag as it was.
 
-`shouldStartPlayback` uses the playout duration of the buffer (media duration divided by speed) against 5 seconds, or 15 seconds after a rebuffer. Do not wait for the 60-second minimum before the first sound.
+`shouldStartPlayback` uses the playout duration of the buffer (media duration divided by speed) against 5 seconds, or 15 seconds after a rebuffer. At 1.25x that is 6.25 seconds of media to start, and 18.75 seconds of media to resume after a stall. Do not wait for the 300-second minimum before the first sound.
 
 Fatal-error guard, in the same pure-function file:
 
-- `handlePlayerPlaybackError` currently force-transcodes on **any** direct-play error. A network failure that exhausts the 36 attempts would then open an HLS session while offline, which fails and closes playback anyway, and can reset a server stream if the network is only half up.
+- `handlePlayerPlaybackError` currently force-transcodes on **any** direct-play error. A network failure that exhausts the 45 attempts would then open an HLS session while offline, which fails and closes playback anyway, and can reset a server stream if the network is only half up.
 - Pass `PlaybackException.errorCode` through. Fall back to transcode only for container parse failures: `ERROR_CODE_PARSING_CONTAINER_MALFORMED` (3001) and `ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED` (3003).
 - Every other code keeps today's terminal path: `onPlaybackFailed` and `closePlayback(true)`. Do not add a new error screen.
 
@@ -202,10 +210,10 @@ That is three new files and two edited files. No Vue, Swift, or server file.
 Risks:
 
 - A custom `shouldContinueLoading` that drifts from ExoPlayer 2.18.7 can stall at the start or never fill the buffer. The unit tests lock the copied formula, including the speed scale and the 500 ms floor.
-- Putting the 180-second profile on HLS can reset the server transcode. The HLS numbers are a test, not a comment.
-- Raising the retry count without excluding 404 makes a genuinely missing direct-play URL spin for about 3 minutes. The retry function treats 404 / 410 / 416 as fatal.
+- Putting the 300-second profile on HLS can reset the server transcode. The HLS numbers are a test, not a comment.
+- Raising the retry count without excluding 404 makes a genuinely missing direct-play URL spin for the whole backoff, about 20 minutes. The retry function treats 404 / 410 / 416 as fatal on the first failure.
 - `setMediaSourceFactory` must not replace the explicit first-track source. Item 0 stays a `ProgressiveMediaSource` or `HlsMediaSource` built as it is today. The player factory applies to `addMediaItems` only.
-- After 36 failures the session still closes and the auto-advance queue is cleared. That is existing `closePlayback` behavior. Do not "fix" it here.
+- After 45 failures the session still closes and the auto-advance queue is cleared. That is existing `closePlayback` behavior. Do not "fix" it here.
 
 ---
 
@@ -224,14 +232,13 @@ Risks:
 - `fun shouldStartPlayback(bufferedDurationUs, playbackSpeed, rebuffering, bufferForPlaybackUs, bufferForPlaybackAfterRebufferUs): Boolean`
 
 - [ ] Write failing tests:
-  - Direct durations are 60_000, 180_000, 5_000, 15_000, back buffer 30_000, target bytes `48 * 1024 * 1024`, prioritize time true.
-  - HLS durations are 20_000, 45_000, 5_000, 20_000, back buffer 0, and do not use the 48 MiB ceiling (keep ExoPlayer's unset / default by using the existing 13,107,200 byte audio cap so HLS behavior stays put).
-  - At speed 1.0, buffered 10 seconds, target not reached: continue loading.
-  - At speed 1.0, buffered 180 seconds: stop, even if the previous flag was loading.
-  - At speed 2.0, the minimum scales from 60 seconds to 120 seconds of media. Buffered 90 seconds, previous flag false: keep not loading. Buffered 30 seconds: load.
-  - At speed 1.0, buffered 90 seconds (between min and max): return `wasLoading` unchanged.
-  - Below the minimum, byte target already reached, prioritize time true: still load. Same inputs with prioritize time false: do not load.
-  - Start playback at 5 seconds buffered, speed 1, not rebuffering. Do not start at 4 seconds. After rebuffer, 15 seconds is enough and 14 seconds is not. At speed 2, 5 seconds of media is only 2.5 seconds of playout, so playback does not start yet.
+  - Direct durations are 300_000, 300_000, 5_000, 15_000, back buffer 30_000, target bytes `16 * 1024 * 1024`, prioritize time false.
+  - HLS durations are 20_000, 45_000, 5_000, 20_000, back buffer 0, target bytes 13_107_200, prioritize time false. HLS does not use the 16 MiB ceiling.
+  - Using the direct profile at speed 1.0, buffered 10 seconds, byte target not reached: continue loading. Buffered 300 seconds: stop, even if the previous flag was loading. Buffered 299 seconds: still load.
+  - Using the direct profile at speed 1.25, the scaled minimum stays 300 seconds (375 seconds capped at the max). Buffered 299 seconds: load. Buffered 300 seconds: stop.
+  - Formula coverage with an explicit 60-second minimum and 180-second maximum, so the copied ExoPlayer rule stays tested even though the direct profile has no gap between min and max. At speed 2.0 the minimum scales to 120 seconds. Buffered 90 seconds, previous flag false: keep not loading. Buffered 30 seconds: load. At speed 1.0, buffered 90 seconds: return `wasLoading` unchanged.
+  - Below the minimum, byte target already reached, prioritize time true: still load. Same inputs with prioritize time false: do not load. Direct profile (prioritize time false) at 60 seconds buffered with 16 MiB already allocated: do not load.
+  - Start playback at 5 seconds buffered, speed 1, not rebuffering. Do not start at 4 seconds. After rebuffer, 15 seconds is enough and 14 seconds is not. At speed 1.25, 6.25 seconds of media starts playback and 5 seconds does not. After a rebuffer at 1.25, 18.75 seconds of media is enough and 15 seconds is not.
 - [ ] Run `./gradlew :app:testDebugUnitTest --tests com.audiobookshelf.app.player.StreamingBufferTest` and confirm the new tests fail because the production functions do not exist.
 - [ ] Implement the functions. Copy the 2.18.7 inequalities. `Util.getMediaDurationForPlayoutDuration(mediaUs, speed)` is `mediaUs * speed`. Playout duration is `mediaUs / speed`.
 - [ ] Re-run the same test. It passes.
@@ -242,13 +249,14 @@ Risks:
 
 **Interfaces:**
 
-- `const val STREAMING_RETRY_COUNT = 36`
+- `const val STREAMING_RETRY_COUNT = 45`
 - `enum class LoadFailure { Network, Unavailable, NotRetryable }` — `Unavailable` is HTTP 502 / 503 / 504. `NotRetryable` is parser, file-not-found, cleartext, 404, 410, 416, position out of range.
 - `fun retryDelayMs(errorCount: Int, failure: LoadFailure): Long?` — null means fatal (`C.TIME_UNSET` at the ExoPlayer boundary).
 - `fun shouldFallbackToTranscode(errorCode: Int): Boolean`
 
 - [ ] Write failing tests:
-  - Network failure, error count 1, delay 0. Count 2, delay 1_000. Count 6, delay 5_000. Count 36, delay 5_000. Count 37, null.
+  - Network failure delays: count 1 is 0, count 2 is 1_000, count 3 is 2_000, count 4 is 4_000, count 5 is 8_000, count 6 is 16_000, count 7 is 30_000, count 45 is 30_000, count 46 is null.
+  - The sum of the non-null delays for counts 1 through 45 is 1_201_000 ms.
   - `Unavailable` uses the same delays. `NotRetryable` is null at count 1.
   - `shouldFallbackToTranscode` is true only for 3001 and 3003. It is false for 2001 (connection failed), 2002 (timeout), 2004 (bad HTTP status), 2005 (file not found), and 3002 / 3004.
 - [ ] Run the test task and confirm these tests fail.
@@ -269,13 +277,12 @@ The wrapper is not a place for new policy. `shouldContinueLoading` reads the act
 
 ### Task 4: Manual drop test
 
-This cannot be a unit test. Do it on a device or emulator against the self-hosted server, direct-playing a normal mp3 or m4b (the session log line is `preparePlayer: Direct playing item`, not `Playing HLS stream`).
+This cannot be a unit test. Do it on a device or emulator against the self-hosted server, direct-playing one of Jason's mp3 or m4b files (the session log line is `preparePlayer: Direct playing item`, not `Playing HLS stream`). Set playback speed to 1.25x. The full 15-minute budget is locked by the delay-sum unit test. This pass checks that audio survives a real drop and that an empty buffer waits instead of toasting immediately.
 
-- [ ] Play for at least 30 seconds so the buffer can fill. Turn airplane mode on for 30 seconds, then off. Audio does not stop. Logcat does not show `onPlayerError` or `Fallback to transcode`.
-- [ ] Repeat for 90 seconds. At 1x, audio still does not stop. At 2x, 90 seconds of clock time is exactly the 180-second media buffer, so a stall at the end is acceptable. It must resume without the failure toast when the network returns, as long as the retry budget is not exhausted.
-- [ ] With airplane mode still on after the buffer has drained, wait. The player sits buffering. When airplane mode goes off within the retry window, playback resumes. It does not open an HLS session (`Fallback to transcode` is absent).
-- [ ] Leave airplane mode on until the toast `Playback Failed` appears. Playback ends. That is the budget-exhausted path.
-- [ ] Play a file that transcodes (or force the existing fallback once) and confirm logcat says `Playing HLS stream` and that a short airplane toggle does not behave worse than today's build. Do not expect 3 minutes of HLS buffer.
+- [ ] Let playback run about 15 seconds so it has started and the buffer has had time to fill (5 minutes of a 128 kbps file is about 5 MiB). Turn airplane mode on for 90 seconds, then off. Audio does not stop. Logcat does not show `onPlayerError` or `Fallback to transcode`.
+- [ ] Repeat with airplane mode on for about 3 minutes. At 1.25x that consumes 225 seconds of media, under the 300-second cushion. Audio does not stop.
+- [ ] Leave airplane mode on until the audio stops (the buffer has drained). Wait another 2 minutes while it is still offline. The player sits buffering. The `Playback Failed` toast does not appear. Turn airplane mode off. Playback resumes within about 30 seconds (the backoff cap) and does not open an HLS session (`Fallback to transcode` is absent).
+- [ ] Play a file that transcodes (or force the existing fallback once) and confirm logcat says `Playing HLS stream` and that a short airplane toggle does not behave worse than today's build. Do not expect 5 minutes of HLS buffer.
 - [ ] Play a downloaded / local item and confirm it still starts and seeks.
 
 ---
@@ -301,4 +308,4 @@ Then run the airplane-mode steps in Task 4. `assembleDebug` writes `app\build\ou
 
 ## Review
 
-After the tasks above are green, run `/review-bugbot` on the implementation diff. If that command is not available, review the diff manually against this plan (buffer numbers, HLS left at 45 seconds, retry exclusions, no version bump, no disk cache, no settings UI) and write that in the PR.
+After the tasks above are green, run `/review-bugbot` on the implementation diff. If that command is not available, review the diff manually against this plan (direct-play min and max both 300 seconds, 16 MiB ceiling, retry count 45 with the 30-second cap, 404 and parser errors not retried, transcode fallback only for 3001 and 3003, HLS left at 45 seconds, no version bump, no disk cache, no settings UI) and write that in the PR.
