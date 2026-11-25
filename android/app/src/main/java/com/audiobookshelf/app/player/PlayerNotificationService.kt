@@ -198,6 +198,15 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         if (button != TransportButton.Other) {
           deliverMediaButton(button)
         }
+      } else if (keyEvent?.action == KeyEvent.ACTION_DOWN && keyEvent.keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+        val hasBookmark = try {
+          DeviceManager.dbManager.getResumeBookmark() != null
+        } catch (_: Throwable) {
+          false
+        }
+        if (coldWidgetPlay(keyEvent.action, keyEvent.keyCode, loadedPlayer() == LoadedPlayer.Empty, hasBookmark)) {
+          deliverMediaButton(TransportButton.PlayPause)
+        }
       }
     }
 
@@ -230,7 +239,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     AbsLogger.info(tag, "onDestroy")
-    Log.i(tag, "onDestroy; media session released and widget transport controls hidden")
+    Log.i(tag, "onDestroy; media session released. Widget keeps play when a resume bookmark exists")
     isStarted = false
     isClosed = true
     DeviceManager.widgetUpdater?.onPlayerChanged(this)
@@ -1343,6 +1352,23 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  private fun playbackIsEmpty(): Boolean = loadedPlayer() == LoadedPlayer.Empty
+
+  fun resumeFromRecentItem(mediaId: String?): Boolean {
+    val bookmark = try {
+      DeviceManager.dbManager.getResumeBookmark()
+    } catch (_: Throwable) {
+      null
+    }
+    if (playRequest(mediaId, bookmark != null, playbackIsEmpty()) != PlayRequest.ResumeBookmark || bookmark == null) {
+      return false
+    }
+    if (!PlayerNotificationListener.isForegroundService) startForegroundForResume()
+    AbsLogger.info(tag, "resume recent item id=$mediaId")
+    resumeFromBookmark(bookmark)
+    return true
+  }
+
   private fun loadedPlayer(): LoadedPlayer {
     if (currentPlaybackSession == null || !::currentPlayer.isInitialized) return LoadedPlayer.Empty
     if (currentPlayer.playbackState == Player.STATE_IDLE) return LoadedPlayer.Empty
@@ -1492,12 +1518,21 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (resumeInFlight) return
     resumeInFlight = true
     val serverId = choice.serverLibraryItemId
-    if (serverId == null || !DeviceManager.checkConnectivity(ctx)) {
-      Log.i(tag, "resume bookmark offline for $serverId")
+    val configId =
+            connectionConfigIdForResume(
+                    bookmark.serverConnectionConfigId,
+                    DeviceManager.deviceData.serverConnectionConfigs.map { it.id },
+                    DeviceManager.serverConnectionConfigId.takeIf { it.isNotEmpty() }
+            )
+    val config = DeviceManager.getServerConnectionConfig(configId)
+    if (config == null || serverId == null || !DeviceManager.checkConnectivity(ctx)) {
+      Log.i(tag, "resume bookmark offline for $serverId config=$configId")
       abandonResumeNotification()
       resumeInFlight = false
       return
     }
+    DeviceManager.serverConnectionConfig = config
+    AbsLogger.info(tag, "resume bookmark server=${config.id}")
     val rate = mediaManager.getSavedPlaybackRate()
     apiHandler.playLibraryItem(serverId, choice.serverEpisodeId, getPlayItemRequestPayload(false)) { session ->
       if (session == null) {
@@ -1776,6 +1811,29 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           clientUid: Int,
           rootHints: Bundle?
   ): BrowserRoot? {
+    val recent = rootHints?.getBoolean(BrowserRoot.EXTRA_RECENT, false) == true
+    val hasBookmark = try {
+      DeviceManager.dbManager.getResumeBookmark() != null
+    } catch (_: Throwable) {
+      false
+    }
+    val decision =
+            browserRootFor(
+                    clientPackageName,
+                    recent,
+                    hasBookmark,
+                    VALID_MEDIA_BROWSERS.contains(clientPackageName)
+            )
+    if (decision == BrowserDecision.Reject) {
+      if (recent) AbsLogger.info(tag, "onGetRoot rejected package=$clientPackageName recent=true")
+      return null
+    }
+    if (decision == BrowserDecision.RecentRoot) {
+      AbsLogger.info(tag, "onGetRoot recent resume package=$clientPackageName")
+      val extras = Bundle()
+      extras.putBoolean(BrowserRoot.EXTRA_RECENT, true)
+      return BrowserRoot(RECENT_MEDIA_ROOT, extras)
+    }
     // Verify that the specified package is allowed to access your content
     return if (!isValid(clientPackageName, clientUid)) {
       // No further calls will be made to other media browsing methods.
@@ -1807,11 +1865,29 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  private fun recentResumeChildren(): MutableList<MediaBrowserCompat.MediaItem> {
+    val session = DeviceManager.deviceData.lastPlaybackSession
+    val description =
+            MediaDescriptionCompat.Builder()
+                    .setMediaId(RESUME_MEDIA_ID)
+                    .setTitle(session?.displayTitle ?: "Audiobookshelf")
+                    .setSubtitle(session?.displayAuthor)
+                    .build()
+    return mutableListOf(
+            MediaBrowserCompat.MediaItem(description, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE)
+    )
+  }
+
   override fun onLoadChildren(
           parentMediaId: String,
           result: Result<MutableList<MediaBrowserCompat.MediaItem>>
   ) {
     AbsLogger.info(tag, "onLoadChildren: parentMediaId: $parentMediaId (${DeviceManager.serverConnectionConfigString})")
+
+    if (parentMediaId == RECENT_MEDIA_ROOT) {
+      result.sendResult(recentResumeChildren())
+      return
+    }
 
     result.detach()
 

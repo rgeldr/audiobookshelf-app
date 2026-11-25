@@ -204,6 +204,10 @@ fun positionToResume(
   return bookmark.positionSeconds
 }
 
+fun coldWidgetPlay(keyAction: Int, keyCode: Int, playerEmpty: Boolean, hasBookmark: Boolean): Boolean {
+  return keyAction == 0 && keyCode == 85 && playerEmpty && hasBookmark
+}
+
 fun transportButton(keyCode: Int): TransportButton {
   return when (keyCode) {
     126 -> TransportButton.Play
@@ -340,4 +344,53 @@ private fun serverLibraryItemId(bookmark: ResumeBookmark): String? {
 
 private fun serverEpisodeId(bookmark: ResumeBookmark): String? {
   return bookmark.serverEpisodeId ?: if (!bookmark.local) bookmark.episodeId else null
+}
+
+const val RESUME_MEDIA_ID = "resume-bookmark"
+const val RECENT_MEDIA_ROOT = "__RESUME__"
+
+data class WidgetControls(val play: Boolean, val seek: Boolean)
+
+fun widgetControls(serviceClosed: Boolean, hasBookmark: Boolean): WidgetControls {
+  if (!serviceClosed) return WidgetControls(play = true, seek = true)
+  if (hasBookmark) return WidgetControls(play = true, seek = false)
+  return WidgetControls(play = false, seek = false)
+}
+
+enum class BrowserDecision {
+  AutoRoot,
+  RecentRoot,
+  Reject
+}
+
+fun browserRootFor(
+        packageName: String,
+        recentHint: Boolean,
+        hasBookmark: Boolean,
+        isAutoClient: Boolean
+): BrowserDecision {
+  if (isAutoClient) return BrowserDecision.AutoRoot
+  if (recentHint && hasBookmark && packageName == "com.android.systemui") return BrowserDecision.RecentRoot
+  return BrowserDecision.Reject
+}
+
+enum class PlayRequest {
+  ResumeBookmark,
+  Browse
+}
+
+fun playRequest(mediaId: String?, hasBookmark: Boolean, playerEmpty: Boolean): PlayRequest {
+  if (!hasBookmark) return PlayRequest.Browse
+  if (mediaId == RESUME_MEDIA_ID) return PlayRequest.ResumeBookmark
+  if (playerEmpty && mediaId == null) return PlayRequest.ResumeBookmark
+  return PlayRequest.Browse
+}
+
+fun connectionConfigIdForResume(bookmarkConfigId: String?, configIds: List<String>, activeId: String?): String? {
+  if (bookmarkConfigId != null) {
+    return if (configIds.contains(bookmarkConfigId)) bookmarkConfigId else null
+  }
+  if (activeId != null && configIds.contains(activeId)) return activeId
+  if (configIds.size == 1) return configIds[0]
+  return null
 }
