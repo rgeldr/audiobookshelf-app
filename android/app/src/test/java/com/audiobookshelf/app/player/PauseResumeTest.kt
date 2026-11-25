@@ -483,6 +483,18 @@ class PauseResumeTest {
   }
 
   @Test
+  fun widgetBodyAlwaysOpensTheApp() {
+    for (closed in listOf(true, false)) {
+      for (bookmark in listOf(true, false)) {
+        assertEquals(WidgetTap.OpenApp, widgetTap(WidgetRegion.Body, closed, bookmark))
+      }
+    }
+    assertEquals(WidgetTap.OpenAppAndResume, widgetTap(WidgetRegion.Play, serviceClosed = true, hasBookmark = false))
+    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Play, serviceClosed = false, hasBookmark = true))
+    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Seek, serviceClosed = true, hasBookmark = true))
+  }
+
+  @Test
   fun widgetResumeActionIsRecognized() {
     assertTrue(shouldResumeFromWidget(RESUME_FROM_WIDGET_ACTION))
     assertFalse(shouldResumeFromWidget(null))

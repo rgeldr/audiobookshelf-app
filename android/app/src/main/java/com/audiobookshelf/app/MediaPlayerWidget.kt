@@ -18,10 +18,11 @@ import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.player.RESUME_FROM_WIDGET_ACTION
-import com.audiobookshelf.app.player.WidgetPlayAction
+import com.audiobookshelf.app.player.WidgetRegion
+import com.audiobookshelf.app.player.WidgetTap
 import com.audiobookshelf.app.player.shouldRestoreWidgetFromBookmark
 import com.audiobookshelf.app.player.widgetControls
-import com.audiobookshelf.app.player.widgetPlayAction
+import com.audiobookshelf.app.player.widgetTap
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.AppWidgetTarget
@@ -61,49 +62,34 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
   val tag = "MediaPlayerWidget"
   val views = RemoteViews(context.packageName, R.layout.media_player_widget)
   Log.i(tag, "updateAppWidget ${playbackSession?.displayTitle ?: "No Title"} isPlaying=$isPlaying isAppClosed=$isAppClosed")
-  val wholeWidgetClickI = Intent(context, MainActivity::class.java)
-  wholeWidgetClickI.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-  val wholeWidgetClickPI = PendingIntent.getActivity(
-    context,
-    System.currentTimeMillis().toInt(),
-    wholeWidgetClickI,
-    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-  )
-
-  val playPausePI = when (widgetPlayAction(isAppClosed)) {
-    WidgetPlayAction.OpenAppAndResume -> {
-      val resume = Intent(context, MainActivity::class.java)
-      resume.action = RESUME_FROM_WIDGET_ACTION
-      resume.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-      PendingIntent.getActivity(
-        context,
-        2,
-        resume,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-      )
-    }
-    WidgetPlayAction.MediaButton ->
-      MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_PLAY_PAUSE)
-  }
-  views.setOnClickPendingIntent(R.id.widgetPlayPauseButton, playPausePI)
-
-  val fastForwardPI = MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_FAST_FORWARD)
-  views.setOnClickPendingIntent(R.id.widgetFastForwardButton, fastForwardPI)
-
-  val rewindPI = MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_REWIND)
-  views.setOnClickPendingIntent(R.id.widgetRewindButton, rewindPI)
-
   val hasBookmark = try {
     DeviceManager.dbManager.getResumeBookmark() != null
   } catch (_: Throwable) {
     false
   }
+  val openApp = widgetActivityIntent(context, resume = false)
+  if (widgetTap(WidgetRegion.Body, isAppClosed, hasBookmark) == WidgetTap.OpenApp) {
+    for (bodyId in WIDGET_BODY_IDS) {
+      views.setOnClickPendingIntent(bodyId, openApp)
+    }
+  }
+  views.setOnClickPendingIntent(
+          R.id.widgetPlayPauseButton,
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Play, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_PLAY_PAUSE)
+  )
+  views.setOnClickPendingIntent(
+          R.id.widgetRewindButton,
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_REWIND)
+  )
+  views.setOnClickPendingIntent(
+          R.id.widgetFastForwardButton,
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_FAST_FORWARD)
+  )
+
   val controls = widgetControls(isAppClosed, hasBookmark)
   views.setViewVisibility(R.id.widgetButtonContainer, if (controls.play) View.VISIBLE else View.GONE)
   views.setViewVisibility(R.id.widgetRewindButton, if (controls.seek) View.VISIBLE else View.GONE)
   views.setViewVisibility(R.id.widgetFastForwardButton, if (controls.seek) View.VISIBLE else View.GONE)
-
-  views.setOnClickPendingIntent(R.id.widgetBackground, wholeWidgetClickPI)
 
   val imageUri = playbackSession?.getCoverUri(context) ?: Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
   val awt: AppWidgetTarget = object : AppWidgetTarget(context.applicationContext, R.id.widgetAlbumArt, views, appWidgetId) {
@@ -140,5 +126,37 @@ internal fun restoreWidgetFromBookmark(context: Context, appWidgetManager: AppWi
   }
   for (widgetId in appWidgetIds) {
     updateAppWidget(context, appWidgetManager, widgetId, session, false, true)
+  }
+}
+
+private val WIDGET_BODY_IDS = intArrayOf(
+        R.id.widgetBackground,
+        R.id.widgetContent,
+        R.id.widgetAlbumArt,
+        R.id.widgetDetails,
+        R.id.widgetArtistText,
+        R.id.widgetMediaTitle,
+        R.id.widgetButtonContainer,
+        R.id.widgetCorner,
+        R.id.tinyCornerIcon
+)
+
+private fun widgetActivityIntent(context: Context, resume: Boolean): PendingIntent {
+  val open = Intent(context, MainActivity::class.java)
+  open.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+  if (resume) open.action = RESUME_FROM_WIDGET_ACTION
+  return PendingIntent.getActivity(
+          context,
+          if (resume) 2 else 1,
+          open,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+}
+
+private fun widgetPendingIntent(context: Context, tap: WidgetTap, mediaAction: Long): PendingIntent {
+  return when (tap) {
+    WidgetTap.OpenApp -> widgetActivityIntent(context, resume = false)
+    WidgetTap.OpenAppAndResume -> widgetActivityIntent(context, resume = true)
+    WidgetTap.MediaButton -> MediaButtonReceiver.buildMediaButtonPendingIntent(context, mediaAction)
   }
 }

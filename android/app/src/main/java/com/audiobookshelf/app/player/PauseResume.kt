@@ -187,6 +187,26 @@ enum class WidgetPlayAction {
   OpenAppAndResume
 }
 
+enum class WidgetRegion {
+  Body,
+  Play,
+  Seek
+}
+
+enum class WidgetTap {
+  OpenApp,
+  OpenAppAndResume,
+  MediaButton
+}
+
+fun widgetTap(region: WidgetRegion, serviceClosed: Boolean, hasBookmark: Boolean): WidgetTap {
+  return when (region) {
+    WidgetRegion.Body -> WidgetTap.OpenApp
+    WidgetRegion.Play -> if (serviceClosed) WidgetTap.OpenAppAndResume else WidgetTap.MediaButton
+    WidgetRegion.Seek -> WidgetTap.MediaButton
+  }
+}
+
 fun widgetPlayAction(serviceClosed: Boolean): WidgetPlayAction {
   return if (serviceClosed) WidgetPlayAction.OpenAppAndResume else WidgetPlayAction.MediaButton
 }
