@@ -16,6 +16,7 @@ import androidx.media.session.MediaButtonReceiver
 import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.managers.DbManager
+import com.audiobookshelf.app.player.widgetControls
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.AppWidgetTarget
@@ -72,8 +73,15 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
   val rewindPI = MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_REWIND)
   views.setOnClickPendingIntent(R.id.widgetRewindButton, rewindPI)
 
-  // Show/Hide button container
-  views.setViewVisibility(R.id.widgetButtonContainer, if (isAppClosed) View.GONE else View.VISIBLE)
+  val hasBookmark = try {
+    DeviceManager.dbManager.getResumeBookmark() != null
+  } catch (_: Throwable) {
+    false
+  }
+  val controls = widgetControls(isAppClosed, hasBookmark)
+  views.setViewVisibility(R.id.widgetButtonContainer, if (controls.play) View.VISIBLE else View.GONE)
+  views.setViewVisibility(R.id.widgetRewindButton, if (controls.seek) View.VISIBLE else View.GONE)
+  views.setViewVisibility(R.id.widgetFastForwardButton, if (controls.seek) View.VISIBLE else View.GONE)
 
   views.setOnClickPendingIntent(R.id.widgetBackground, wholeWidgetClickPI)
 

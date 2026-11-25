@@ -394,4 +394,70 @@ class PauseResumeTest {
     assertEquals(59_000L, pausedHoldPositionMs(60_000L))
     assertNull(pausedHoldPositionMs(1_000L))
   }
+
+  @Test
+  fun closedWidgetKeepsPlayOnlyWhileABookmarkExists() {
+    val closedWithBookmark = widgetControls(serviceClosed = true, hasBookmark = true)
+    assertTrue(closedWithBookmark.play)
+    assertFalse(closedWithBookmark.seek)
+    val closedWithoutBookmark = widgetControls(serviceClosed = true, hasBookmark = false)
+    assertFalse(closedWithoutBookmark.play)
+    assertFalse(closedWithoutBookmark.seek)
+    val open = widgetControls(serviceClosed = false, hasBookmark = false)
+    assertTrue(open.play)
+    assertTrue(open.seek)
+  }
+
+  @Test
+  fun systemUiRecentRootRequiresABookmarkAndAutoKeepsItsRoot() {
+    assertEquals(
+            BrowserDecision.RecentRoot,
+            browserRootFor("com.android.systemui", recentHint = true, hasBookmark = true, isAutoClient = false)
+    )
+    assertEquals(
+            BrowserDecision.Reject,
+            browserRootFor("com.android.systemui", recentHint = true, hasBookmark = false, isAutoClient = false)
+    )
+    assertEquals(
+            BrowserDecision.Reject,
+            browserRootFor("com.android.systemui", recentHint = false, hasBookmark = true, isAutoClient = false)
+    )
+    assertEquals(
+            BrowserDecision.AutoRoot,
+            browserRootFor("com.google.android.projection.gearhead", recentHint = true, hasBookmark = true, isAutoClient = true)
+    )
+    assertEquals(
+            BrowserDecision.Reject,
+            browserRootFor("com.example.other", recentHint = true, hasBookmark = true, isAutoClient = false)
+    )
+  }
+
+  @Test
+  fun resumeBookmarkIdAndThePlayButtonResumeTheBookmark() {
+    assertEquals(PlayRequest.ResumeBookmark, playRequest(RESUME_MEDIA_ID, hasBookmark = true, playerEmpty = true))
+    assertEquals(PlayRequest.ResumeBookmark, playRequest(RESUME_MEDIA_ID, hasBookmark = true, playerEmpty = false))
+    assertEquals(PlayRequest.ResumeBookmark, playRequest(null, hasBookmark = true, playerEmpty = true))
+    assertEquals(PlayRequest.Browse, playRequest("library-item", hasBookmark = true, playerEmpty = true))
+    assertEquals(PlayRequest.Browse, playRequest(RESUME_MEDIA_ID, hasBookmark = false, playerEmpty = true))
+    assertEquals(PlayRequest.Browse, playRequest(null, hasBookmark = true, playerEmpty = false))
+  }
+
+  @Test
+  fun coldPlayUsesTheBookmarkServerNotTheActiveOne() {
+    assertEquals(
+            "srv-b",
+            connectionConfigIdForResume("srv-b", listOf("srv-a", "srv-b"), activeId = "srv-a")
+    )
+    assertNull(connectionConfigIdForResume("missing", listOf("srv-a"), activeId = "srv-a"))
+    assertEquals("srv-a", connectionConfigIdForResume(null, listOf("srv-a"), activeId = null))
+  }
+
+  @Test
+  fun widgetPlayDownResumesOnlyWhenThePlayerIsEmpty() {
+    assertTrue(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = true, hasBookmark = true))
+    assertFalse(coldWidgetPlay(keyAction = 1, keyCode = 85, playerEmpty = true, hasBookmark = true))
+    assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = false, hasBookmark = true))
+    assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 79, playerEmpty = true, hasBookmark = true))
+    assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = true, hasBookmark = false))
+  }
 }
