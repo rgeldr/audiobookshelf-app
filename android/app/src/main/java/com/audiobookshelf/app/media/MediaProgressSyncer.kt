@@ -7,7 +7,9 @@ import com.audiobookshelf.app.data.LocalMediaProgress
 import com.audiobookshelf.app.data.MediaProgress
 import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.player.PlaybackSnapshot
 import com.audiobookshelf.app.player.PlayerNotificationService
+import com.audiobookshelf.app.player.shouldWriteResumeBookmark
 import com.audiobookshelf.app.plugins.AbsLogger
 import com.audiobookshelf.app.server.ApiHandler
 import java.util.*
@@ -255,7 +257,7 @@ class MediaProgressSyncer(
       return cb(null)
     }
 
-    if (currentPlaybackSession != null) {
+    if (currentPlaybackSession != null && shouldWriteResumeBookmark(PlaybackSnapshot.Playing)) {
       playerNotificationService.rememberResumeBookmark()
     }
 

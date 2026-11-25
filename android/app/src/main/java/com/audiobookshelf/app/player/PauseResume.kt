@@ -32,6 +32,7 @@ enum class LoadedPlayer {
 enum class PlaybackSnapshot {
   ReadyPaused,
   Ended,
+  Playing,
   Other
 }
 
@@ -168,8 +169,31 @@ fun bookmarkMatchesLoadedItem(bookmark: ResumeBookmark, loaded: LoadedIdentity):
 }
 
 fun shouldWriteResumeBookmark(snapshot: PlaybackSnapshot): Boolean {
-  return snapshot == PlaybackSnapshot.ReadyPaused || snapshot == PlaybackSnapshot.Ended
+  return snapshot == PlaybackSnapshot.ReadyPaused ||
+          snapshot == PlaybackSnapshot.Ended ||
+          snapshot == PlaybackSnapshot.Playing
 }
+
+fun shouldReplaceResumeBookmark(snapshot: PlaybackSnapshot, positionSeconds: Double, hasBookmark: Boolean): Boolean {
+  if (!shouldWriteResumeBookmark(snapshot)) return false
+  if (snapshot == PlaybackSnapshot.Playing && positionSeconds <= 0.0 && hasBookmark) return false
+  return true
+}
+
+const val RESUME_FROM_WIDGET_ACTION = "com.audiobookshelf.app.action.RESUME_FROM_WIDGET"
+
+enum class WidgetPlayAction {
+  MediaButton,
+  OpenAppAndResume
+}
+
+fun widgetPlayAction(serviceClosed: Boolean): WidgetPlayAction {
+  return if (serviceClosed) WidgetPlayAction.OpenAppAndResume else WidgetPlayAction.MediaButton
+}
+
+fun shouldRestoreWidgetFromBookmark(serviceStarted: Boolean): Boolean = !serviceStarted
+
+fun shouldResumeFromWidget(action: String?): Boolean = action == RESUME_FROM_WIDGET_ACTION
 
 fun keepTransportControlsAfterEnd(action: PlaybackEndAction): Boolean {
   return action == PlaybackEndAction.Stop

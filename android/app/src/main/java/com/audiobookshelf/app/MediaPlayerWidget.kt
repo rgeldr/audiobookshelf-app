@@ -16,7 +16,12 @@ import androidx.media.session.MediaButtonReceiver
 import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.managers.DbManager
+import com.audiobookshelf.app.player.PlayerNotificationService
+import com.audiobookshelf.app.player.RESUME_FROM_WIDGET_ACTION
+import com.audiobookshelf.app.player.WidgetPlayAction
+import com.audiobookshelf.app.player.shouldRestoreWidgetFromBookmark
 import com.audiobookshelf.app.player.widgetControls
+import com.audiobookshelf.app.player.widgetPlayAction
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.AppWidgetTarget
@@ -29,6 +34,7 @@ class MediaPlayerWidget : AppWidgetProvider() {
   val tag = "MediaPlayerWidget"
   override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
     Log.d(tag, "onUpdate $appWidgetIds")
+    restoreWidgetFromBookmark(context, appWidgetManager, appWidgetIds)
   }
 
   override fun onEnabled(context: Context) {
@@ -64,7 +70,21 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
   )
 
-  val playPausePI = MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_PLAY_PAUSE)
+  val playPausePI = when (widgetPlayAction(isAppClosed)) {
+    WidgetPlayAction.OpenAppAndResume -> {
+      val resume = Intent(context, MainActivity::class.java)
+      resume.action = RESUME_FROM_WIDGET_ACTION
+      resume.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+      PendingIntent.getActivity(
+        context,
+        2,
+        resume,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+      )
+    }
+    WidgetPlayAction.MediaButton ->
+      MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_PLAY_PAUSE)
+  }
   views.setOnClickPendingIntent(R.id.widgetPlayPauseButton, playPausePI)
 
   val fastForwardPI = MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_FAST_FORWARD)
@@ -108,4 +128,17 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
 
   // Instruct the widget manager to update the widget
   appWidgetManager.updateAppWidget(appWidgetId, views)
+}
+
+internal fun restoreWidgetFromBookmark(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+  if (!shouldRestoreWidgetFromBookmark(PlayerNotificationService.isStarted)) return
+  DbManager.initialize(context)
+  val session = try {
+    DeviceManager.deviceData.lastPlaybackSession
+  } catch (_: Throwable) {
+    null
+  }
+  for (widgetId in appWidgetIds) {
+    updateAppWidget(context, appWidgetManager, widgetId, session, false, true)
+  }
 }

@@ -139,6 +139,15 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
         player.volume = 1F // Volume on sleep timer might have decreased this
 
         playerNotificationService.mediaProgressSyncer.play(it)
+        val position = playerNotificationService.getCurrentTimeSeconds()
+        val hasBookmark = try {
+          DeviceManager.dbManager.getResumeBookmark() != null
+        } catch (_: Throwable) {
+          false
+        }
+        if (shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, position, hasBookmark)) {
+          playerNotificationService.rememberResumeBookmark()
+        }
       }
     } else {
       playerNotificationService.mediaProgressSyncer.pause {

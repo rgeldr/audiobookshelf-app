@@ -186,6 +186,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             tag,
             "onStartCommand action=${intent?.action} startId=$startId foreground=${PlayerNotificationListener.isForegroundService}"
     )
+    if (shouldResumeFromWidget(intent?.action)) {
+      Log.i(tag, "widget resume action")
+      deliverMediaButton(TransportButton.Play)
+      return START_STICKY
+    }
     if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
       val keyEvent =
               if (Build.VERSION.SDK_INT >= 33) {

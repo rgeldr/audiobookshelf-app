@@ -69,6 +69,7 @@
           android:layout_weight="1"
           android:layout_margin="8dp"
           android:src="@drawable/exo_icon_rewind"
+          android:visibility="gone"
           style="@style/Widget.Android.AppWidget.InnerView"/>
 
         <ImageView
@@ -85,7 +86,8 @@
           android:layout_height="match_parent"
           android:layout_weight="1"
           android:layout_margin="8dp"
-          android:src="@drawable/exo_icon_fastforward" />
+          android:src="@drawable/exo_icon_fastforward"
+          android:visibility="gone" />
       </LinearLayout>
 
     </LinearLayout>

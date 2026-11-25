@@ -387,6 +387,7 @@ class PauseResumeTest {
   fun endedPlaybackWritesThatItemAndKeepsControls() {
     assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.Ended))
     assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.ReadyPaused))
+    assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.Playing))
     assertFalse(shouldWriteResumeBookmark(PlaybackSnapshot.Other))
     assertTrue(keepTransportControlsAfterEnd(PlaybackEndAction.Stop))
     assertFalse(keepTransportControlsAfterEnd(PlaybackEndAction.StartNext))
@@ -459,5 +460,32 @@ class PauseResumeTest {
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = false, hasBookmark = true))
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 79, playerEmpty = true, hasBookmark = true))
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = true, hasBookmark = false))
+  }
+
+  @Test
+  fun closedWidgetPlayOpensTheAppAndARunningServiceKeepsTheMediaButton() {
+    assertEquals(WidgetPlayAction.OpenAppAndResume, widgetPlayAction(serviceClosed = true))
+    assertEquals(WidgetPlayAction.MediaButton, widgetPlayAction(serviceClosed = false))
+  }
+
+  @Test
+  fun stoppedProcessRestoresTheWidgetAndARunningServiceDoesNot() {
+    assertTrue(shouldRestoreWidgetFromBookmark(serviceStarted = false))
+    assertFalse(shouldRestoreWidgetFromBookmark(serviceStarted = true))
+  }
+
+  @Test
+  fun playingAtZeroDoesNotReplaceAnExistingBookmark() {
+    assertFalse(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 0.0, hasBookmark = true))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 12.0, hasBookmark = true))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 0.0, hasBookmark = false))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.ReadyPaused, 0.0, hasBookmark = true))
+  }
+
+  @Test
+  fun widgetResumeActionIsRecognized() {
+    assertTrue(shouldResumeFromWidget(RESUME_FROM_WIDGET_ACTION))
+    assertFalse(shouldResumeFromWidget(null))
+    assertFalse(shouldResumeFromWidget("android.intent.action.MAIN"))
   }
 }
