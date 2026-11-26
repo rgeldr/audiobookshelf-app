@@ -17,10 +17,13 @@ import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.player.PlayerNotificationService
-import com.audiobookshelf.app.player.RESUME_FROM_WIDGET_ACTION
+import com.audiobookshelf.app.player.WIDGET_ACTIVITY_RESUME_REQUEST_CODE
+import com.audiobookshelf.app.player.WIDGET_OPEN_APP_REQUEST_CODE
+import com.audiobookshelf.app.player.WIDGET_SERVICE_RESUME_REQUEST_CODE
 import com.audiobookshelf.app.player.WidgetRegion
 import com.audiobookshelf.app.player.WidgetTap
 import com.audiobookshelf.app.player.shouldRestoreWidgetFromBookmark
+import com.audiobookshelf.app.player.widgetResumeIntentAction
 import com.audiobookshelf.app.player.widgetControls
 import com.audiobookshelf.app.player.widgetTap
 import com.bumptech.glide.Glide
@@ -68,22 +71,22 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
     false
   }
   val openApp = widgetActivityIntent(context, resume = false)
-  if (widgetTap(WidgetRegion.Body, isAppClosed, hasBookmark) == WidgetTap.OpenApp) {
+  if (widgetTap(WidgetRegion.Body, isPlaying, android.os.Build.VERSION.SDK_INT) == WidgetTap.OpenApp) {
     for (bodyId in WIDGET_BODY_IDS) {
       views.setOnClickPendingIntent(bodyId, openApp)
     }
   }
   views.setOnClickPendingIntent(
           R.id.widgetPlayPauseButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Play, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_PLAY_PAUSE)
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Play, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_PLAY_PAUSE)
   )
   views.setOnClickPendingIntent(
           R.id.widgetRewindButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_REWIND)
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_REWIND)
   )
   views.setOnClickPendingIntent(
           R.id.widgetFastForwardButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isAppClosed, hasBookmark), PlaybackStateCompat.ACTION_FAST_FORWARD)
+          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_FAST_FORWARD)
   )
 
   val controls = widgetControls(isAppClosed, hasBookmark)
@@ -144,11 +147,25 @@ private val WIDGET_BODY_IDS = intArrayOf(
 private fun widgetActivityIntent(context: Context, resume: Boolean): PendingIntent {
   val open = Intent(context, MainActivity::class.java)
   open.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-  if (resume) open.action = RESUME_FROM_WIDGET_ACTION
+  if (resume) open.action = widgetResumeIntentAction()
   return PendingIntent.getActivity(
           context,
-          if (resume) 2 else 1,
+          if (resume) WIDGET_ACTIVITY_RESUME_REQUEST_CODE else WIDGET_OPEN_APP_REQUEST_CODE,
           open,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+}
+
+private fun widgetForegroundServiceIntent(context: Context): PendingIntent {
+  if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) {
+    return widgetActivityIntent(context, resume = true)
+  }
+  val resume = Intent(context, PlayerNotificationService::class.java)
+  resume.action = widgetResumeIntentAction()
+  return PendingIntent.getForegroundService(
+          context,
+          WIDGET_SERVICE_RESUME_REQUEST_CODE,
+          resume,
           PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
   )
 }
@@ -157,6 +174,7 @@ private fun widgetPendingIntent(context: Context, tap: WidgetTap, mediaAction: L
   return when (tap) {
     WidgetTap.OpenApp -> widgetActivityIntent(context, resume = false)
     WidgetTap.OpenAppAndResume -> widgetActivityIntent(context, resume = true)
+    WidgetTap.ResumeService -> widgetForegroundServiceIntent(context)
     WidgetTap.MediaButton -> MediaButtonReceiver.buildMediaButtonPendingIntent(context, mediaAction)
   }
 }

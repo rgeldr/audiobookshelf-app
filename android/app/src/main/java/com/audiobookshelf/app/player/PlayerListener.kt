@@ -36,6 +36,9 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     val label = pauseReasonLabel(reason, consumePauseOrigin(pausing = !playWhenReady))
     AbsLogger.info(tag, "playWhenReady=$playWhenReady reason=$label")
     Log.i(tag, "playWhenReady=$playWhenReady reason=$label")
+    if (shouldRepaintWidgetForPause(playWhenReady)) {
+      DeviceManager.widgetUpdater?.onPlaybackPaused(playerNotificationService)
+    }
   }
 
   override fun onPositionDiscontinuity(

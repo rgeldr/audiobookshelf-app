@@ -247,7 +247,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.i(tag, "onDestroy; media session released. Widget keeps play when a resume bookmark exists")
     isStarted = false
     isClosed = true
-    DeviceManager.widgetUpdater?.onPlayerChanged(this)
+    DeviceManager.widgetUpdater?.onPlaybackPaused(this)
 
     playerNotificationManager.setPlayer(null)
     mPlayer.release()

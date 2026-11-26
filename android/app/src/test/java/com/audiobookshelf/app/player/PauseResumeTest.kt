@@ -463,9 +463,27 @@ class PauseResumeTest {
   }
 
   @Test
-  fun closedWidgetPlayOpensTheAppAndARunningServiceKeepsTheMediaButton() {
-    assertEquals(WidgetPlayAction.OpenAppAndResume, widgetPlayAction(serviceClosed = true))
-    assertEquals(WidgetPlayAction.MediaButton, widgetPlayAction(serviceClosed = false))
+  fun pausedOrIdleWidgetPlayStartsTheProcessAndPlayingStaysAMediaButton() {
+    // A pause paints the widget while the service is still alive. A later OEM kill
+    // never gets onDestroy, so that paint must already be able to start the process.
+    assertEquals(WidgetPlayDelivery.ForegroundService, widgetPlayDelivery(playing = false, sdkInt = 31))
+    assertEquals(WidgetPlayDelivery.ForegroundService, widgetPlayDelivery(playing = false, sdkInt = 26))
+    assertEquals(WidgetPlayDelivery.Activity, widgetPlayDelivery(playing = false, sdkInt = 25))
+    assertEquals(WidgetPlayDelivery.MediaButton, widgetPlayDelivery(playing = true, sdkInt = 36))
+    assertEquals(WidgetPlayDelivery.MediaButton, widgetPlayDelivery(playing = true, sdkInt = 24))
+    assertEquals(WidgetPlayAction.ResumeService, widgetPlayAction(playing = false, sdkInt = 31))
+    assertEquals(WidgetPlayAction.OpenAppAndResume, widgetPlayAction(playing = false, sdkInt = 24))
+    assertEquals(WidgetPlayAction.MediaButton, widgetPlayAction(playing = true, sdkInt = 31))
+  }
+
+  @Test
+  fun audioFocusPauseRepaintsTheWidgetTheSameWayAnInAppPauseDoes() {
+    // ExoPlayer reason 2 is audio-focus loss. Reason 1 plus an in-app origin is the JS pause.
+    // Neither is a buffering seek, so both must repaint the paused widget immediately.
+    assertEquals("audio-focus-loss", pauseReasonLabel(2, PAUSE_IN_APP))
+    assertEquals("in-app", pauseReasonLabel(1, PAUSE_IN_APP))
+    assertTrue(shouldRepaintWidgetForPause(playWhenReady = false))
+    assertFalse(shouldRepaintWidgetForPause(playWhenReady = true))
   }
 
   @Test
@@ -483,15 +501,19 @@ class PauseResumeTest {
   }
 
   @Test
-  fun widgetBodyAlwaysOpensTheApp() {
-    for (closed in listOf(true, false)) {
-      for (bookmark in listOf(true, false)) {
-        assertEquals(WidgetTap.OpenApp, widgetTap(WidgetRegion.Body, closed, bookmark))
+  fun widgetBodyAlwaysOpensTheAppAndPausedPlayStartsTheService() {
+    for (playing in listOf(true, false)) {
+      for (sdk in listOf(24, 31)) {
+        assertEquals(WidgetTap.OpenApp, widgetTap(WidgetRegion.Body, playing, sdk))
+        assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Seek, playing, sdk))
       }
     }
-    assertEquals(WidgetTap.OpenAppAndResume, widgetTap(WidgetRegion.Play, serviceClosed = true, hasBookmark = false))
-    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Play, serviceClosed = false, hasBookmark = true))
-    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Seek, serviceClosed = true, hasBookmark = true))
+    assertEquals(WidgetTap.ResumeService, widgetTap(WidgetRegion.Play, playing = false, sdkInt = 31))
+    assertEquals(WidgetTap.OpenAppAndResume, widgetTap(WidgetRegion.Play, playing = false, sdkInt = 24))
+    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Play, playing = true, sdkInt = 31))
+    assertEquals(RESUME_FROM_WIDGET_ACTION, widgetResumeIntentAction())
+    assertTrue(WIDGET_SERVICE_RESUME_REQUEST_CODE != WIDGET_ACTIVITY_RESUME_REQUEST_CODE)
+    assertTrue(WIDGET_SERVICE_RESUME_REQUEST_CODE != WIDGET_OPEN_APP_REQUEST_CODE)
   }
 
   @Test

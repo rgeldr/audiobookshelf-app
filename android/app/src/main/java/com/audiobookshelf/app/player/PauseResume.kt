@@ -184,7 +184,14 @@ const val RESUME_FROM_WIDGET_ACTION = "com.audiobookshelf.app.action.RESUME_FROM
 
 enum class WidgetPlayAction {
   MediaButton,
-  OpenAppAndResume
+  OpenAppAndResume,
+  ResumeService
+}
+
+enum class WidgetPlayDelivery {
+  MediaButton,
+  ForegroundService,
+  Activity
 }
 
 enum class WidgetRegion {
@@ -196,20 +203,48 @@ enum class WidgetRegion {
 enum class WidgetTap {
   OpenApp,
   OpenAppAndResume,
-  MediaButton
+  MediaButton,
+  ResumeService
 }
 
-fun widgetTap(region: WidgetRegion, serviceClosed: Boolean, hasBookmark: Boolean): WidgetTap {
-  return when (region) {
-    WidgetRegion.Body -> WidgetTap.OpenApp
-    WidgetRegion.Play -> if (serviceClosed) WidgetTap.OpenAppAndResume else WidgetTap.MediaButton
-    WidgetRegion.Seek -> WidgetTap.MediaButton
+const val WIDGET_OPEN_APP_REQUEST_CODE = 1
+const val WIDGET_ACTIVITY_RESUME_REQUEST_CODE = 2
+const val WIDGET_SERVICE_RESUME_REQUEST_CODE = 3
+
+/** PendingIntent.getForegroundService exists from API 26. Older widgets fall back to the activity. */
+const val FOREGROUND_SERVICE_RESUME_SDK = 26
+
+fun widgetPlayDelivery(playing: Boolean, sdkInt: Int): WidgetPlayDelivery {
+  if (playing) return WidgetPlayDelivery.MediaButton
+  if (sdkInt >= FOREGROUND_SERVICE_RESUME_SDK) return WidgetPlayDelivery.ForegroundService
+  return WidgetPlayDelivery.Activity
+}
+
+fun widgetPlayAction(playing: Boolean, sdkInt: Int): WidgetPlayAction {
+  return when (widgetPlayDelivery(playing, sdkInt)) {
+    WidgetPlayDelivery.MediaButton -> WidgetPlayAction.MediaButton
+    WidgetPlayDelivery.ForegroundService -> WidgetPlayAction.ResumeService
+    WidgetPlayDelivery.Activity -> WidgetPlayAction.OpenAppAndResume
   }
 }
 
-fun widgetPlayAction(serviceClosed: Boolean): WidgetPlayAction {
-  return if (serviceClosed) WidgetPlayAction.OpenAppAndResume else WidgetPlayAction.MediaButton
+fun widgetTap(region: WidgetRegion, playing: Boolean, sdkInt: Int): WidgetTap {
+  return when (region) {
+    WidgetRegion.Body -> WidgetTap.OpenApp
+    WidgetRegion.Seek -> WidgetTap.MediaButton
+    WidgetRegion.Play ->
+            when (widgetPlayDelivery(playing, sdkInt)) {
+              WidgetPlayDelivery.MediaButton -> WidgetTap.MediaButton
+              WidgetPlayDelivery.ForegroundService -> WidgetTap.ResumeService
+              WidgetPlayDelivery.Activity -> WidgetTap.OpenAppAndResume
+            }
+  }
 }
+
+/** A real pause, including audio-focus loss, must repaint before an OEM can kill the process. */
+fun shouldRepaintWidgetForPause(playWhenReady: Boolean): Boolean = !playWhenReady
+
+fun widgetResumeIntentAction(): String = RESUME_FROM_WIDGET_ACTION
 
 fun shouldRestoreWidgetFromBookmark(serviceStarted: Boolean): Boolean = !serviceStarted
 
