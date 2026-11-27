@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.webkit.WebView
@@ -17,8 +18,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.view.updateLayoutParams
 import com.anggrayudi.storage.SimpleStorage
 import com.anggrayudi.storage.SimpleStorageHelper
+import android.appwidget.AppWidgetManager
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.player.PlayerNotificationService
+import com.audiobookshelf.app.player.RESUME_FROM_WIDGET_ACTION
+import com.audiobookshelf.app.player.shouldResumeFromWidget
 import com.audiobookshelf.app.plugins.AbsAudioPlayer
 import com.audiobookshelf.app.plugins.AbsDatabase
 import com.audiobookshelf.app.plugins.AbsDownloader
@@ -96,6 +100,28 @@ class MainActivity : BridgeActivity() {
     }
 
     requestNeededPermissions()
+    restoreHomeWidget()
+    resumeFromWidget(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    resumeFromWidget(intent)
+  }
+
+  private fun restoreHomeWidget() {
+    val manager = AppWidgetManager.getInstance(this)
+    val ids = manager.getAppWidgetIds(ComponentName(this, MediaPlayerWidget::class.java))
+    restoreWidgetFromBookmark(this, manager, ids)
+  }
+
+  private fun resumeFromWidget(intent: Intent?) {
+    if (!shouldResumeFromWidget(intent?.action)) return
+    Log.i(tag, "Opening from the widget play button")
+    val resume = Intent(this, PlayerNotificationService::class.java)
+    resume.action = RESUME_FROM_WIDGET_ACTION
+    ContextCompat.startForegroundService(this, resume)
   }
 
   private fun requestNeededPermissions() {

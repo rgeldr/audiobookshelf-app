@@ -186,6 +186,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             tag,
             "onStartCommand action=${intent?.action} startId=$startId foreground=${PlayerNotificationListener.isForegroundService}"
     )
+    if (shouldResumeFromWidget(intent?.action)) {
+      Log.i(tag, "widget resume action")
+      deliverMediaButton(widgetResumeTransport())
+      return START_STICKY
+    }
     if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
       val keyEvent =
               if (Build.VERSION.SDK_INT >= 33) {
@@ -193,19 +198,21 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               } else {
                 @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
               }
-      if (keyEvent?.action == KeyEvent.ACTION_UP) {
-        val button = transportButton(keyEvent.keyCode)
-        if (button != TransportButton.Other) {
-          deliverMediaButton(button)
-        }
-      } else if (keyEvent?.action == KeyEvent.ACTION_DOWN && keyEvent.keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
-        val hasBookmark = try {
-          DeviceManager.dbManager.getResumeBookmark() != null
-        } catch (_: Throwable) {
-          false
-        }
-        if (coldWidgetPlay(keyEvent.action, keyEvent.keyCode, loadedPlayer() == LoadedPlayer.Empty, hasBookmark)) {
-          deliverMediaButton(TransportButton.PlayPause)
+      if (keyEvent != null) {
+        when (widgetMediaCommand(keyEvent.action, keyEvent.keyCode)) {
+          WidgetServiceCommand.TogglePlayback -> deliverMediaButton(TransportButton.PlayPause)
+          WidgetServiceCommand.Play -> deliverMediaButton(TransportButton.Play)
+          WidgetServiceCommand.Pause -> deliverMediaButton(TransportButton.Pause)
+          WidgetServiceCommand.Rewind -> if (widgetSeekAllowed(loadedPlayer())) {
+            if (!PlayerNotificationListener.isForegroundService) startForegroundForResume()
+            jumpBackward()
+          }
+          WidgetServiceCommand.FastForward -> if (widgetSeekAllowed(loadedPlayer())) {
+            if (!PlayerNotificationListener.isForegroundService) startForegroundForResume()
+            jumpForward()
+          }
+          WidgetServiceCommand.Stop -> deliverMediaButton(TransportButton.Stop)
+          WidgetServiceCommand.None -> {}
         }
       }
     }
@@ -242,7 +249,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.i(tag, "onDestroy; media session released. Widget keeps play when a resume bookmark exists")
     isStarted = false
     isClosed = true
-    DeviceManager.widgetUpdater?.onPlayerChanged(this)
+    DeviceManager.widgetUpdater?.onPlaybackPaused(this)
 
     playerNotificationManager.setPlayer(null)
     mPlayer.release()

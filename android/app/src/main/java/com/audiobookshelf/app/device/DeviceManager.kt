@@ -20,6 +20,9 @@ interface WidgetEventEmitter {
    */
   fun onPlayerChanged(pns: PlayerNotificationService)
 
+  /** Paused or idle, including audio-focus loss. The play control must be able to start a dead process. */
+  fun onPlaybackPaused(pns: PlayerNotificationService)
+
   /** Called when the player is closed. */
   fun onPlayerClosed()
 }
@@ -189,13 +192,29 @@ object DeviceManager {
     widgetUpdater =
             (object : WidgetEventEmitter {
               override fun onPlayerChanged(pns: PlayerNotificationService) {
-                val isPlaying = pns.currentPlayer.isPlaying
+                paint(
+                        pns.getCurrentPlaybackSessionCopy(),
+                        pns.currentPlayer.isPlaying,
+                        PlayerNotificationService.isClosed
+                )
+              }
 
+              override fun onPlaybackPaused(pns: PlayerNotificationService) {
+                paint(pns.getCurrentPlaybackSessionCopy(), false, PlayerNotificationService.isClosed)
+              }
+
+              override fun onPlayerClosed() {
+                paint(deviceData.lastPlaybackSession, false, PlayerNotificationService.isClosed)
+              }
+
+              private fun paint(
+                      playbackSession: PlaybackSession?,
+                      isPlaying: Boolean,
+                      isAppClosed: Boolean
+              ) {
                 val appWidgetManager = AppWidgetManager.getInstance(context)
                 val componentName = ComponentName(context, MediaPlayerWidget::class.java)
                 val ids = appWidgetManager.getAppWidgetIds(componentName)
-                val playbackSession = pns.getCurrentPlaybackSessionCopy()
-
                 for (widgetId in ids) {
                   updateAppWidget(
                           context,
@@ -203,23 +222,7 @@ object DeviceManager {
                           widgetId,
                           playbackSession,
                           isPlaying,
-                          PlayerNotificationService.isClosed
-                  )
-                }
-              }
-
-              override fun onPlayerClosed() {
-                val appWidgetManager = AppWidgetManager.getInstance(context)
-                val componentName = ComponentName(context, MediaPlayerWidget::class.java)
-                val ids = appWidgetManager.getAppWidgetIds(componentName)
-                for (widgetId in ids) {
-                  updateAppWidget(
-                          context,
-                          appWidgetManager,
-                          widgetId,
-                          deviceData.lastPlaybackSession,
-                          false,
-                          PlayerNotificationService.isClosed
+                          isAppClosed
                   )
                 }
               }

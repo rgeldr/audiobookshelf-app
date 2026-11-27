@@ -387,6 +387,7 @@ class PauseResumeTest {
   fun endedPlaybackWritesThatItemAndKeepsControls() {
     assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.Ended))
     assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.ReadyPaused))
+    assertTrue(shouldWriteResumeBookmark(PlaybackSnapshot.Playing))
     assertFalse(shouldWriteResumeBookmark(PlaybackSnapshot.Other))
     assertTrue(keepTransportControlsAfterEnd(PlaybackEndAction.Stop))
     assertFalse(keepTransportControlsAfterEnd(PlaybackEndAction.StartNext))
@@ -459,5 +460,138 @@ class PauseResumeTest {
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = false, hasBookmark = true))
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 79, playerEmpty = true, hasBookmark = true))
     assertFalse(coldWidgetPlay(keyAction = 0, keyCode = 85, playerEmpty = true, hasBookmark = false))
+  }
+
+  @Test
+  fun pausedOrIdleWidgetPlayStartsTheProcessAndPlayingStaysAMediaButton() {
+    // A pause paints the widget while the service is still alive. A later OEM kill
+    // never gets onDestroy, so that paint must already be able to start the process.
+    assertEquals(WidgetPlayDelivery.ForegroundService, widgetPlayDelivery(playing = false, sdkInt = 31))
+    assertEquals(WidgetPlayDelivery.ForegroundService, widgetPlayDelivery(playing = false, sdkInt = 26))
+    assertEquals(WidgetPlayDelivery.Activity, widgetPlayDelivery(playing = false, sdkInt = 25))
+    assertEquals(WidgetPlayDelivery.MediaButton, widgetPlayDelivery(playing = true, sdkInt = 36))
+    assertEquals(WidgetPlayDelivery.MediaButton, widgetPlayDelivery(playing = true, sdkInt = 24))
+    assertEquals(WidgetPlayAction.ResumeService, widgetPlayAction(playing = false, sdkInt = 31))
+    assertEquals(WidgetPlayAction.OpenAppAndResume, widgetPlayAction(playing = false, sdkInt = 24))
+    assertEquals(WidgetPlayAction.MediaButton, widgetPlayAction(playing = true, sdkInt = 31))
+  }
+
+  @Test
+  fun audioFocusPauseRepaintsTheWidgetTheSameWayAnInAppPauseDoes() {
+    // ExoPlayer reason 2 is audio-focus loss. Reason 1 plus an in-app origin is the JS pause.
+    // Neither is a buffering seek, so both must repaint the paused widget immediately.
+    assertEquals("audio-focus-loss", pauseReasonLabel(2, PAUSE_IN_APP))
+    assertEquals("in-app", pauseReasonLabel(1, PAUSE_IN_APP))
+    assertTrue(shouldRepaintWidgetForPause(playWhenReady = false))
+    assertFalse(shouldRepaintWidgetForPause(playWhenReady = true))
+  }
+
+  @Test
+  fun stoppedProcessRestoresTheWidgetAndARunningServiceDoesNot() {
+    assertTrue(shouldRestoreWidgetFromBookmark(serviceStarted = false))
+    assertFalse(shouldRestoreWidgetFromBookmark(serviceStarted = true))
+  }
+
+  @Test
+  fun playingAtZeroDoesNotReplaceAnExistingBookmark() {
+    assertFalse(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 0.0, hasBookmark = true))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 12.0, hasBookmark = true))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.Playing, 0.0, hasBookmark = false))
+    assertTrue(shouldReplaceResumeBookmark(PlaybackSnapshot.ReadyPaused, 0.0, hasBookmark = true))
+  }
+
+  @Test
+  fun widgetBodyAlwaysOpensTheAppAndPausedPlayStartsTheService() {
+    for (playing in listOf(true, false)) {
+      for (sdk in listOf(24, 31)) {
+        assertEquals(WidgetTap.OpenApp, widgetTap(WidgetRegion.Body, playing, sdk))
+        assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Seek, playing, sdk))
+      }
+    }
+    assertEquals(WidgetTap.ResumeService, widgetTap(WidgetRegion.Play, playing = false, sdkInt = 31))
+    assertEquals(WidgetTap.OpenAppAndResume, widgetTap(WidgetRegion.Play, playing = false, sdkInt = 24))
+    assertEquals(WidgetTap.MediaButton, widgetTap(WidgetRegion.Play, playing = true, sdkInt = 31))
+    assertEquals(RESUME_FROM_WIDGET_ACTION, widgetResumeIntentAction())
+    assertTrue(WIDGET_SERVICE_RESUME_REQUEST_CODE != WIDGET_ACTIVITY_RESUME_REQUEST_CODE)
+    assertTrue(WIDGET_SERVICE_RESUME_REQUEST_CODE != WIDGET_OPEN_APP_REQUEST_CODE)
+  }
+
+  @Test
+  fun widgetResumeActionIsRecognized() {
+    assertTrue(shouldResumeFromWidget(RESUME_FROM_WIDGET_ACTION))
+    assertFalse(shouldResumeFromWidget(null))
+    assertFalse(shouldResumeFromWidget("android.intent.action.MAIN"))
+  }
+
+  @Test
+  fun eachWidgetStateGivesEveryControlItsOwnIntent() {
+    assertEquals(WidgetControlIntent(WidgetTap.OpenApp, null), widgetControlIntent(WidgetControl.Cover, playing = true, sdkInt = 31))
+    assertEquals(WidgetControlIntent(WidgetTap.OpenApp, null), widgetControlIntent(WidgetControl.Cover, playing = false, sdkInt = 31))
+
+    assertEquals(
+            WidgetControlIntent(WidgetTap.MediaButton, WIDGET_MEDIA_PLAY_PAUSE),
+            widgetControlIntent(WidgetControl.Play, playing = true, sdkInt = 31)
+    )
+    assertEquals(
+            WidgetControlIntent(WidgetTap.MediaButton, WIDGET_MEDIA_REWIND),
+            widgetControlIntent(WidgetControl.Rewind, playing = true, sdkInt = 31)
+    )
+    assertEquals(
+            WidgetControlIntent(WidgetTap.MediaButton, WIDGET_MEDIA_FAST_FORWARD),
+            widgetControlIntent(WidgetControl.FastForward, playing = true, sdkInt = 31)
+    )
+
+    assertEquals(
+            WidgetControlIntent(WidgetTap.ResumeService, null),
+            widgetControlIntent(WidgetControl.Play, playing = false, sdkInt = 31)
+    )
+    assertEquals(
+            WidgetControlIntent(WidgetTap.OpenAppAndResume, null),
+            widgetControlIntent(WidgetControl.Play, playing = false, sdkInt = 24)
+    )
+    // Seek stays a media button whenever the buttons are shown, including while paused.
+    assertEquals(
+            WidgetControlIntent(WidgetTap.MediaButton, WIDGET_MEDIA_REWIND),
+            widgetControlIntent(WidgetControl.Rewind, playing = false, sdkInt = 31)
+    )
+    assertEquals(
+            WidgetControlIntent(WidgetTap.MediaButton, WIDGET_MEDIA_FAST_FORWARD),
+            widgetControlIntent(WidgetControl.FastForward, playing = false, sdkInt = 31)
+    )
+
+    assertTrue(WIDGET_MEDIA_PLAY_PAUSE != WIDGET_MEDIA_REWIND)
+    assertTrue(WIDGET_MEDIA_PLAY_PAUSE != WIDGET_MEDIA_FAST_FORWARD)
+    assertTrue(WIDGET_MEDIA_REWIND != WIDGET_MEDIA_FAST_FORWARD)
+  }
+
+  @Test
+  fun playingWidgetButtonsPauseAndSeekAndAResumeIntentTogglesPause() {
+    // The widget's MediaButtonReceiver pending intents carry ACTION_DOWN only.
+    assertEquals(WidgetServiceCommand.TogglePlayback, widgetMediaCommand(keyAction = 0, keyCode = 85))
+    assertEquals(WidgetServiceCommand.Rewind, widgetMediaCommand(keyAction = 0, keyCode = 89))
+    assertEquals(WidgetServiceCommand.FastForward, widgetMediaCommand(keyAction = 0, keyCode = 90))
+    // ACTION_UP must not act again. A headset that sends both would otherwise toggle twice.
+    assertEquals(WidgetServiceCommand.None, widgetMediaCommand(keyAction = 1, keyCode = 85))
+    assertEquals(WidgetServiceCommand.None, widgetMediaCommand(keyAction = 1, keyCode = 89))
+    assertEquals(WidgetServiceCommand.Play, widgetMediaCommand(keyAction = 1, keyCode = 126))
+    assertEquals(WidgetServiceCommand.Pause, widgetMediaCommand(keyAction = 1, keyCode = 127))
+    assertEquals(WidgetServiceCommand.Stop, widgetMediaCommand(keyAction = 1, keyCode = 86))
+
+    assertEquals(TransportButton.PlayPause, widgetResumeTransport())
+    assertEquals(
+            ResumeAction.PauseAndKeep,
+            resumeAction(widgetResumeTransport(), LoadedPlayer.Playing, hasBookmark = true)
+    )
+    assertEquals(
+            ResumeAction.ResumeFromBookmark,
+            resumeAction(widgetResumeTransport(), LoadedPlayer.Empty, hasBookmark = true)
+    )
+    assertEquals(
+            ResumeAction.PlayLoaded,
+            resumeAction(widgetResumeTransport(), LoadedPlayer.Paused, hasBookmark = true)
+    )
+    assertTrue(widgetSeekAllowed(LoadedPlayer.Playing))
+    assertTrue(widgetSeekAllowed(LoadedPlayer.Paused))
+    assertFalse(widgetSeekAllowed(LoadedPlayer.Empty))
   }
 }
