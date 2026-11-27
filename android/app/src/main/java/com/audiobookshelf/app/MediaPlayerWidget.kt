@@ -101,9 +101,6 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
     }
   }
 
-  val artist = playbackSession?.displayAuthor ?: "Unknown"
-  views.setTextViewText(R.id.widgetArtistText, artist)
-
   val title = playbackSession?.displayTitle ?: "Unknown"
   views.setTextViewText(R.id.widgetMediaTitle, title)
 
@@ -132,12 +129,13 @@ internal fun restoreWidgetFromBookmark(context: Context, appWidgetManager: AppWi
   }
 }
 
+internal fun widgetBodyViewIds(): IntArray = WIDGET_BODY_IDS
+
 private val WIDGET_BODY_IDS = intArrayOf(
         R.id.widgetBackground,
         R.id.widgetContent,
         R.id.widgetAlbumArt,
         R.id.widgetDetails,
-        R.id.widgetArtistText,
         R.id.widgetMediaTitle,
         R.id.widgetButtonContainer,
         R.id.widgetCorner,
