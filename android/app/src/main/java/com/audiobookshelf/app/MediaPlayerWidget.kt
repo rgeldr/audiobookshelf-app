@@ -101,9 +101,10 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
   views.setViewVisibility(R.id.widgetFastForwardButton, if (controls.seek) View.VISIBLE else View.GONE)
 
   val imageUri = playbackSession?.getCoverUri(context) ?: Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
+  val (coverWidth, coverHeight) = widgetCoverTargetPx(context, appWidgetManager, appWidgetId)
   val awt: AppWidgetTarget = object : AppWidgetTarget(context.applicationContext, R.id.widgetAlbumArt, views, appWidgetId) {
     override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
-      super.onResourceReady(resource, transition)
+      super.onResourceReady(cropWidgetCover(resource, coverWidth, coverHeight), transition)
     }
   }
 
@@ -136,6 +137,32 @@ internal fun restoreWidgetFromBookmark(context: Context, appWidgetManager: AppWi
 }
 
 internal fun widgetBodyViewIds(): IntArray = WIDGET_BODY_IDS
+
+data class WidgetCoverCrop(val x: Int, val y: Int, val width: Int, val height: Int)
+
+/**
+ * Scale-to-fill crop for the widget cover. A taller source keeps the top rows.
+ * A wider source keeps the full height and trims the sides evenly.
+ */
+fun widgetCoverCrop(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int): WidgetCoverCrop {
+  if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0) {
+    return WidgetCoverCrop(0, 0, sourceWidth.coerceAtLeast(0), sourceHeight.coerceAtLeast(0))
+  }
+  val sourceIsWider = sourceWidth.toLong() * targetHeight > targetWidth.toLong() * sourceHeight
+  if (sourceIsWider) {
+    val cropWidth = (sourceHeight.toLong() * targetWidth / targetHeight).toInt().coerceIn(1, sourceWidth)
+    val left = (sourceWidth - cropWidth) / 2
+    return WidgetCoverCrop(left, 0, cropWidth, sourceHeight)
+  }
+  val cropHeight = (sourceWidth.toLong() * targetHeight / targetWidth).toInt().coerceIn(1, sourceHeight)
+  return WidgetCoverCrop(0, 0, sourceWidth, cropHeight)
+}
+
+internal fun cropWidgetCover(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+  val crop = widgetCoverCrop(source.width, source.height, targetWidth, targetHeight)
+  if (crop.x == 0 && crop.y == 0 && crop.width == source.width && crop.height == source.height) return source
+  return Bitmap.createBitmap(source, crop.x, crop.y, crop.width, crop.height)
+}
 
 private val WIDGET_BODY_IDS = intArrayOf(
         R.id.widgetBackground,
@@ -172,6 +199,27 @@ private fun widgetForegroundServiceIntent(context: Context): PendingIntent {
           resume,
           PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
   )
+}
+
+private fun widgetCoverTargetPx(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int): Pair<Int, Int> {
+  val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
+  val portrait = context.resources.configuration.orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE
+  val widthDp = if (portrait) {
+    options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+  } else {
+    options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH)
+  }
+  val heightDp = if (portrait) {
+    options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+  } else {
+    options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
+  }
+  val density = context.resources.displayMetrics.density
+  val widthPx = ((if (widthDp > 0) widthDp else 275) * density).toInt().coerceAtLeast(1)
+  val heightPx = ((if (heightDp > 0) heightDp else 110) * density).toInt().coerceAtLeast(1)
+  val cornerPx = (36 * density).toInt()
+  val coverWidth = (((widthPx - cornerPx).coerceAtLeast(1)) * 2 / 5).coerceAtLeast(1)
+  return coverWidth to heightPx
 }
 
 private fun widgetPendingIntent(context: Context, tap: WidgetTap, mediaAction: Long): PendingIntent {
