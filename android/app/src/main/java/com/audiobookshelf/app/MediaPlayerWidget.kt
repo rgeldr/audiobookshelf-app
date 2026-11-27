@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
-import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
@@ -20,12 +19,15 @@ import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.player.WIDGET_ACTIVITY_RESUME_REQUEST_CODE
 import com.audiobookshelf.app.player.WIDGET_OPEN_APP_REQUEST_CODE
 import com.audiobookshelf.app.player.WIDGET_SERVICE_RESUME_REQUEST_CODE
-import com.audiobookshelf.app.player.WidgetRegion
+import com.audiobookshelf.app.player.WIDGET_MEDIA_FAST_FORWARD
+import com.audiobookshelf.app.player.WIDGET_MEDIA_PLAY_PAUSE
+import com.audiobookshelf.app.player.WIDGET_MEDIA_REWIND
+import com.audiobookshelf.app.player.WidgetControl
 import com.audiobookshelf.app.player.WidgetTap
 import com.audiobookshelf.app.player.shouldRestoreWidgetFromBookmark
+import com.audiobookshelf.app.player.widgetControlIntent
 import com.audiobookshelf.app.player.widgetResumeIntentAction
 import com.audiobookshelf.app.player.widgetControls
-import com.audiobookshelf.app.player.widgetTap
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.RequestOptions
 import com.bumptech.glide.request.target.AppWidgetTarget
@@ -70,23 +72,27 @@ internal fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManage
   } catch (_: Throwable) {
     false
   }
+  val sdkInt = android.os.Build.VERSION.SDK_INT
   val openApp = widgetActivityIntent(context, resume = false)
-  if (widgetTap(WidgetRegion.Body, isPlaying, android.os.Build.VERSION.SDK_INT) == WidgetTap.OpenApp) {
+  if (widgetControlIntent(WidgetControl.Cover, isPlaying, sdkInt).tap == WidgetTap.OpenApp) {
     for (bodyId in WIDGET_BODY_IDS) {
       views.setOnClickPendingIntent(bodyId, openApp)
     }
   }
+  val play = widgetControlIntent(WidgetControl.Play, isPlaying, sdkInt)
+  val rewind = widgetControlIntent(WidgetControl.Rewind, isPlaying, sdkInt)
+  val fastForward = widgetControlIntent(WidgetControl.FastForward, isPlaying, sdkInt)
   views.setOnClickPendingIntent(
           R.id.widgetPlayPauseButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Play, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_PLAY_PAUSE)
+          widgetPendingIntent(context, play.tap, play.mediaAction ?: WIDGET_MEDIA_PLAY_PAUSE)
   )
   views.setOnClickPendingIntent(
           R.id.widgetRewindButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_REWIND)
+          widgetPendingIntent(context, rewind.tap, rewind.mediaAction ?: WIDGET_MEDIA_REWIND)
   )
   views.setOnClickPendingIntent(
           R.id.widgetFastForwardButton,
-          widgetPendingIntent(context, widgetTap(WidgetRegion.Seek, isPlaying, android.os.Build.VERSION.SDK_INT), PlaybackStateCompat.ACTION_FAST_FORWARD)
+          widgetPendingIntent(context, fastForward.tap, fastForward.mediaAction ?: WIDGET_MEDIA_FAST_FORWARD)
   )
 
   val controls = widgetControls(isAppClosed, hasBookmark)

@@ -244,6 +244,82 @@ fun widgetTap(region: WidgetRegion, playing: Boolean, sdkInt: Int): WidgetTap {
 /** A real pause, including audio-focus loss, must repaint before an OEM can kill the process. */
 fun shouldRepaintWidgetForPause(playWhenReady: Boolean): Boolean = !playWhenReady
 
+enum class WidgetControl {
+  Cover,
+  Play,
+  Rewind,
+  FastForward
+}
+
+/** PlaybackStateCompat transport flags. Each one becomes a different media-button key code. */
+const val WIDGET_MEDIA_PLAY_PAUSE = 512L
+const val WIDGET_MEDIA_REWIND = 8L
+const val WIDGET_MEDIA_FAST_FORWARD = 64L
+
+data class WidgetControlIntent(val tap: WidgetTap, val mediaAction: Long?)
+
+fun widgetControlIntent(control: WidgetControl, playing: Boolean, sdkInt: Int): WidgetControlIntent {
+  val tap =
+          when (control) {
+            WidgetControl.Cover -> WidgetTap.OpenApp
+            WidgetControl.Play -> widgetTap(WidgetRegion.Play, playing, sdkInt)
+            WidgetControl.Rewind, WidgetControl.FastForward -> widgetTap(WidgetRegion.Seek, playing, sdkInt)
+          }
+  val mediaAction =
+          if (tap == WidgetTap.MediaButton) {
+            when (control) {
+              WidgetControl.Play -> WIDGET_MEDIA_PLAY_PAUSE
+              WidgetControl.Rewind -> WIDGET_MEDIA_REWIND
+              WidgetControl.FastForward -> WIDGET_MEDIA_FAST_FORWARD
+              WidgetControl.Cover -> null
+            }
+          } else {
+            null
+          }
+  return WidgetControlIntent(tap, mediaAction)
+}
+
+enum class WidgetServiceCommand {
+  None,
+  TogglePlayback,
+  Play,
+  Pause,
+  Rewind,
+  FastForward,
+  Stop
+}
+
+/**
+ * Widget pending intents from MediaButtonReceiver carry ACTION_DOWN only (key action 0).
+ * Play/pause is 85, rewind is 89, and fast-forward is 90. The matching ACTION_UP is
+ * ignored so a second event does not run the command again. Dedicated play (126),
+ * pause (127), and stop (86) keys still arrive as ACTION_UP.
+ */
+fun widgetMediaCommand(keyAction: Int, keyCode: Int): WidgetServiceCommand {
+  if (keyAction == 0) {
+    return when (keyCode) {
+      85, 79 -> WidgetServiceCommand.TogglePlayback
+      89 -> WidgetServiceCommand.Rewind
+      90 -> WidgetServiceCommand.FastForward
+      else -> WidgetServiceCommand.None
+    }
+  }
+  if (keyAction == 1) {
+    return when (keyCode) {
+      126 -> WidgetServiceCommand.Play
+      127 -> WidgetServiceCommand.Pause
+      86 -> WidgetServiceCommand.Stop
+      else -> WidgetServiceCommand.None
+    }
+  }
+  return WidgetServiceCommand.None
+}
+
+/** Play while already playing must pause. Play while paused or empty still resumes. */
+fun widgetResumeTransport(): TransportButton = TransportButton.PlayPause
+
+fun widgetSeekAllowed(player: LoadedPlayer): Boolean = player != LoadedPlayer.Empty
+
 fun widgetResumeIntentAction(): String = RESUME_FROM_WIDGET_ACTION
 
 fun shouldRestoreWidgetFromBookmark(serviceStarted: Boolean): Boolean = !serviceStarted
